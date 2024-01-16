@@ -85,6 +85,16 @@ impl Discoverer {
         self
     }
 
+    pub fn with_cadence(mut self, tau: Duration) -> Self {
+        self.tau = tau;
+        self
+    }
+
+    pub fn with_response_rate(mut self, phi: f32) -> Self {
+        self.phi = phi;
+        self
+    }
+
     pub fn spawn(self, handle: &Handle) -> anyhow::Result<DropGuard> {
         let mut discoverer = self;
         let tau = discoverer.tau;
@@ -121,7 +131,10 @@ impl Discoverer {
                             match res {
                                 Ok((len, addr)) => {
                                     tracing::trace!("received {} bytes from {}", len, addr);
-                                    handle_recv_phase_1(&mut discoverer, &buf[..len], &service_name);
+                                    let p1 = handle_recv_phase_1(&mut discoverer, &buf[..len], &service_name);
+                                    if p1 == Phase1::Query {
+                                        break;
+                                    }
                                 }
                                 Err(e) => {
                                     tracing::warn!("error receiving from mDNS socket: {}", e);
@@ -132,7 +145,7 @@ impl Discoverer {
                 }
 
                 // phase 2
-                let timeout = tokio::time::sleep(Duration::from_millis(100));
+                let timeout = tokio::time::sleep(Duration::from_millis(100) / 1_000_000 * thread_rng().gen_range(0..1_000_000));
                 pin!(timeout);
                 let mut counter = 0;
                 loop {
@@ -240,10 +253,17 @@ async fn send_msg(msg: &Message, socket: &UdpSocket) {
     if let Err(e) = socket.send_to(&bytes, (MDNS_IPV4, MDNS_PORT)).await {
         tracing::warn!("error sending mDNS: {}", e);
     } else {
-        tracing::debug!("sent {} bytes: {msg}", bytes.len());
+        tracing::debug!(
+            q = msg.queries().len(),
+            an = msg.answers().len(),
+            ad = msg.additionals().len(),
+            "sent {} bytes",
+            bytes.len()
+        );
     }
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 enum Phase1 {
     Error,
     Query,
@@ -277,6 +297,7 @@ fn handle_recv_phase_1(peers: &mut Discoverer, buf: &[u8], service_name: &Name) 
             tracing::trace!("received mDNS query for wrong service {}", question.name());
             continue;
         }
+        tracing::debug!("received mDNS query for {}", question.name());
         return Phase1::Query;
     }
     handle_response(packet, peers, service_name);
@@ -333,7 +354,7 @@ fn handle_response(packet: Message, peers: &mut Discoverer, service_name: &Name)
             tracing::trace!("received mDNS additional for wrong service {}", name);
             continue;
         }
-        tracing::debug!("received mDNS additional for {}", name);
+        tracing::trace!("received mDNS additional for {}", name);
         let Cow::Borrowed(name) = String::from_utf8_lossy(name.iter().next().unwrap()) else {
             tracing::debug!("received mDNS response with invalid target {:?}", name);
             continue;
