@@ -1,6 +1,11 @@
+use crate::IpClass;
 use anyhow::Context;
+use hickory_proto::op::Message;
 use socket2::{Domain, Protocol, Socket, Type};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
+    sync::Arc,
+};
 use tokio::net::UdpSocket;
 
 pub const MDNS_PORT: u16 = 5353;
@@ -50,4 +55,71 @@ pub fn socket_v6() -> anyhow::Result<UdpSocket> {
         .context("join_multicast_v6")?;
     socket.set_nonblocking(true).context("set_nonblocking")?;
     Ok(UdpSocket::from_std(std::net::UdpSocket::from(socket)).context("from_std")?)
+}
+
+#[derive(Clone)]
+pub struct Sockets {
+    v4: Option<Arc<UdpSocket>>,
+    v6: Option<Arc<UdpSocket>>,
+}
+
+impl Sockets {
+    pub fn new(class: IpClass) -> anyhow::Result<Self> {
+        Ok(Self {
+            v4: class
+                .has_v4()
+                .then(|| socket_v4().context("socket_v4").map(Arc::new))
+                .transpose()?,
+            v6: class
+                .has_v6()
+                .then(|| socket_v6().context("socket_v6").map(Arc::new))
+                .transpose()?,
+        })
+    }
+
+    pub fn v4(&self) -> Option<Arc<UdpSocket>> {
+        self.v4.as_ref().map(Arc::clone)
+    }
+
+    pub fn v6(&self) -> Option<Arc<UdpSocket>> {
+        self.v6.as_ref().map(Arc::clone)
+    }
+
+    pub async fn send_msg(&self, msg: &Message, mode: Mode) {
+        let bytes = match msg.to_vec() {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("error serializing mDNS: {}", e);
+                return;
+            }
+        };
+        let (socket, addr) = match mode {
+            Mode::V4 => (self.v4.as_ref().unwrap(), IpAddr::from(MDNS_IPV4)),
+            Mode::V6 => (self.v6.as_ref().unwrap(), IpAddr::from(MDNS_IPV6)),
+            Mode::Any => {
+                if let Some(v4) = &self.v4 {
+                    (v4, IpAddr::from(MDNS_IPV4))
+                } else {
+                    (self.v6.as_ref().unwrap(), IpAddr::from(MDNS_IPV6))
+                }
+            }
+        };
+        if let Err(e) = socket.send_to(&bytes, (addr, MDNS_PORT)).await {
+            tracing::warn!("error sending mDNS: {}", e);
+        } else {
+            tracing::debug!(
+                q = msg.queries().len(),
+                an = msg.answers().len(),
+                ad = msg.additionals().len(),
+                "sent {} bytes",
+                bytes.len()
+            );
+        }
+    }
+}
+
+pub enum Mode {
+    V4,
+    V6,
+    Any,
 }

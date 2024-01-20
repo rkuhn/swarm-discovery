@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+acto = { version = "0.7.0", features = ["tokio"] }
 anyhow = "1.0.79"
-dns-parser = "0.8.0"
 hickory-proto = "0.24.0"
 rand = "0.8.5"
 socket2 = { version = "0.5.5", features = ["all"] }
@@ -15,4 +15,13 @@ tokio = { version = "1.35.1", features = ["macros", "net", "rt", "time"] }
 tracing = "0.1.40"
 
 [dev-dependencies]
+if-addrs = "0.11.0"
+ipc-channel = "0.16.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+netsim-embed = { version = "0.8.0", features = ["ipc"] }
+
+[[test]]
+name = "discovery"
+harness = false
