@@ -33,7 +33,7 @@ pub fn socket_v4() -> anyhow::Result<UdpSocket> {
         .set_multicast_ttl_v4(16)
         .context("set_multicast_ttl_v4")?;
     socket.set_nonblocking(true).context("set_nonblocking")?;
-    Ok(UdpSocket::from_std(std::net::UdpSocket::from(socket)).context("from_std")?)
+    UdpSocket::from_std(std::net::UdpSocket::from(socket)).context("from_std")
 }
 
 pub fn socket_v6() -> anyhow::Result<UdpSocket> {
@@ -54,7 +54,7 @@ pub fn socket_v6() -> anyhow::Result<UdpSocket> {
         .join_multicast_v6(&MDNS_IPV6, 0)
         .context("join_multicast_v6")?;
     socket.set_nonblocking(true).context("set_nonblocking")?;
-    Ok(UdpSocket::from_std(std::net::UdpSocket::from(socket)).context("from_std")?)
+    UdpSocket::from_std(std::net::UdpSocket::from(socket)).context("from_std")
 }
 
 #[derive(Clone)]

@@ -2,6 +2,14 @@
 name = "swarm-discovery"
 version = "0.1.0"
 edition = "2021"
+authors = ["Roland Kuhn"]
+description = "Discovery service for UDP-based swarms"
+license = "Apache-2.0"
+repository = "https://github.com/rkuhn/swarm-discovery"
+readme = "README.md"
+keywords = ["swarm", "discovery", "udp"]
+categories = ["network-programming", "asynchronous", "distributed-systems"]
+documentation = "https://docs.rs/swarm-discovery"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

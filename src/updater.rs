@@ -1,10 +1,10 @@
-use crate::Peer;
+use crate::{Callback, Peer};
 use acto::{ActoCell, ActoInput, ActoRuntime};
 use std::collections::BTreeMap;
 
 pub async fn updater(
     mut ctx: ActoCell<BTreeMap<String, Peer>, impl ActoRuntime>,
-    mut callback: Box<dyn FnMut(&str, &Peer) + Send + Sync>,
+    mut callback: Callback,
 ) {
     let mut peers = BTreeMap::new();
     while let ActoInput::Message(msg) = ctx.recv().await {
