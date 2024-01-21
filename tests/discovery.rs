@@ -7,7 +7,10 @@ fn main() {
 fn test() {
     use if_addrs::get_if_addrs;
     use ipc_channel::ipc::{channel, IpcReceiver, IpcSender};
-    use netsim_embed::{declare_machines, machine, run_tests, DelayBuffer, Ipv4Range, Netsim};
+    use netsim_embed::{
+        declare_machines, machine, run_tests, DelayBuffer, Ipv4Range, MachineId, Netsim, NetworkId,
+    };
+    use serde::{Deserialize, Serialize};
     use std::{
         collections::{BTreeMap, BTreeSet},
         thread,
@@ -16,6 +19,12 @@ fn test() {
     use swarm_discovery::{Discoverer, Protocol};
     use tokio::runtime::Builder;
     use tracing_subscriber::{fmt, EnvFilter};
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    enum Disco {
+        Discover { host: String, peer: String },
+        Forget { host: String, peer: String },
+    }
 
     #[machine]
     fn disco(
@@ -26,7 +35,7 @@ fn test() {
             String,
             u16,
             IpcReceiver<()>,
-            IpcSender<(String, String)>,
+            IpcSender<Disco>,
         ),
     ) {
         let rt = Builder::new_multi_thread()
@@ -43,8 +52,19 @@ fn test() {
         let _guard = Discoverer::new("swarm".to_owned(), peer_id.clone())
             .with_protocol(protocol)
             .with_addrs(port, addrs)
-            .with_callback(move |pid, _addrs| {
-                snd.send((peer_id.clone(), pid.to_owned())).expect("send");
+            .with_callback(move |pid, peer| {
+                let msg = if peer.addrs.is_empty() {
+                    Disco::Forget {
+                        host: peer_id.clone(),
+                        peer: pid.to_owned(),
+                    }
+                } else {
+                    Disco::Discover {
+                        host: peer_id.clone(),
+                        peer: pid.to_owned(),
+                    }
+                };
+                snd.send(msg).expect("send");
             })
             .with_cadence(tau)
             .with_response_rate(phi)
@@ -54,11 +74,41 @@ fn test() {
         rcv.recv().expect("recv");
     }
 
-    fn discover(protocol: Protocol) {
-        let rt = Builder::new_current_thread()
-            .build()
-            .expect("build runtime");
+    async fn spawn(
+        sim: &mut Netsim<String, String>,
+        net: NetworkId,
+        protocol: Protocol,
+        tau: Duration,
+        phi: f32,
+        num: usize,
+        tx_f: IpcSender<Disco>,
+    ) -> (MachineId, IpcSender<()>) {
+        let (tx_d, rx_d) = channel().expect("channel");
+        let tx_f = tx_f.clone();
 
+        let mut delay = DelayBuffer::new();
+        delay.set_delay(Duration::from_millis(10));
+        let id = sim
+            .spawn(
+                disco,
+                (
+                    protocol,
+                    tau,
+                    phi,
+                    format!("peer_id{}", num),
+                    1234 + num as u16,
+                    rx_d,
+                    tx_f,
+                ),
+                Some(delay),
+            )
+            .await;
+        sim.plug(id, net, None).await;
+
+        (id, tx_d)
+    }
+
+    async fn discover(protocol: Protocol) {
         let mut sim = Netsim::<String, String>::new();
         let net = sim.spawn_network(Ipv4Range::random_local_subnet());
         sim.network(net)
@@ -73,38 +123,10 @@ fn test() {
         let tau = Duration::from_millis(2000);
         let phi = 5f32;
 
-        let spawn = move |sim: &mut Netsim<String, String>, num: usize| {
-            let (tx_d, rx_d) = channel().expect("channel");
-            let tx_f = tx_f.clone();
-
-            rt.block_on(async move {
-                let mut delay = DelayBuffer::new();
-                delay.set_delay(Duration::from_millis(10));
-                let id = sim
-                    .spawn(
-                        disco,
-                        (
-                            protocol,
-                            tau,
-                            phi,
-                            format!("peer_id{}", num),
-                            1234 + num as u16,
-                            rx_d,
-                            tx_f,
-                        ),
-                        Some(delay),
-                    )
-                    .await;
-                sim.plug(id, net, None).await;
-            });
-
-            tx_d
-        };
-
         let mut discovered = BTreeMap::<String, BTreeSet<String>>::new();
         let mut channels = Vec::with_capacity(N);
         for i in 0..N {
-            let tx_d = spawn(&mut sim, i);
+            let (_, tx_d) = spawn(&mut sim, net, protocol, tau, phi, i, tx_f.clone()).await;
             discovered.insert(format!("peer_id{}", i), BTreeSet::new());
             channels.push(tx_d);
             thread::sleep(Duration::from_millis(10));
@@ -114,7 +136,11 @@ fn test() {
         let start = Instant::now();
         let mut discoveries = 0;
         loop {
-            let (host, peer) = rx_f.try_recv_timeout(Duration::from_secs(5)).unwrap();
+            let Disco::Discover { host, peer } =
+                rx_f.try_recv_timeout(Duration::from_secs(5)).unwrap()
+            else {
+                continue;
+            };
             discoveries += 1;
             tracing::info!(
                 "{} discovered {} ({} remaining)",
@@ -145,14 +171,18 @@ fn test() {
         // the real test is now adding a node and observing its discoveries while
         // seeing basically no duplicates
 
-        let tx_d = spawn(&mut sim, N);
+        let (_, tx_d) = spawn(&mut sim, net, protocol, tau, phi, N, tx_f).await;
         let peer_id = format!("peer_id{}", N);
         let mut discovered = BTreeSet::new();
         let start = Instant::now();
         discoveries = 0;
         while discovered.len() < (N + 1) {
+            let Disco::Discover { host, peer } =
+                rx_f.try_recv_timeout(Duration::from_secs(5)).unwrap()
+            else {
+                continue;
+            };
             discoveries += 1;
-            let (host, peer) = rx_f.recv().expect("recv");
             if host != peer_id {
                 continue;
             }
@@ -181,11 +211,89 @@ fn test() {
     }
 
     fn discover_udp() {
-        discover(Protocol::Udp);
+        Builder::new_current_thread()
+            .build()
+            .expect("build runtime")
+            .block_on(discover(Protocol::Udp));
     }
 
     fn discover_tcp() {
-        discover(Protocol::Tcp);
+        Builder::new_current_thread()
+            .build()
+            .expect("build runtime")
+            .block_on(discover(Protocol::Tcp));
+    }
+
+    fn gc() {
+        let rt = Builder::new_current_thread()
+            .build()
+            .expect("build runtime");
+
+        let mut sim = Netsim::<String, String>::new();
+        let net = sim.spawn_network(Ipv4Range::random_local_subnet());
+
+        // one channel for the discoveries
+        let (tx_f, rx_f) = channel().expect("channel");
+
+        let (_, tx1) = rt.block_on(spawn(
+            &mut sim,
+            net,
+            Protocol::Udp,
+            Duration::from_secs(1),
+            1f32,
+            0,
+            tx_f.clone(),
+        ));
+
+        let (_, tx2) = rt.block_on(spawn(
+            &mut sim,
+            net,
+            Protocol::Udp,
+            Duration::from_secs(1),
+            1f32,
+            1,
+            tx_f.clone(),
+        ));
+
+        let (_, tx3) = rt.block_on(spawn(
+            &mut sim,
+            net,
+            Protocol::Udp,
+            Duration::from_secs(1),
+            1f32,
+            2,
+            tx_f.clone(),
+        ));
+
+        let mut discovered = BTreeSet::new();
+        while discovered.len() < 9 {
+            let Disco::Discover { host, peer } =
+                rx_f.try_recv_timeout(Duration::from_secs(5)).unwrap()
+            else {
+                continue;
+            };
+            tracing::info!("{} discovered {}", host, peer);
+            discovered.insert((host, peer));
+        }
+
+        // kill the first peer
+        tx1.send(()).expect("send");
+
+        let mut forgotten = BTreeSet::new();
+        while forgotten.len() < 2 {
+            let Disco::Forget { host, peer } =
+                rx_f.try_recv_timeout(Duration::from_secs(5)).unwrap()
+            else {
+                continue;
+            };
+            assert_ne!(host, "peer_id0");
+            assert_eq!(peer, "peer_id0");
+            tracing::info!("{} forgot {}", host, peer);
+            forgotten.insert(host);
+        }
+
+        tx2.send(()).expect("send");
+        tx3.send(()).expect("send");
     }
 
     fmt()
@@ -194,5 +302,5 @@ fn test() {
         .init();
 
     declare_machines!(disco);
-    run_tests!(discover_udp, discover_tcp);
+    run_tests!(discover_udp, discover_tcp, gc);
 }
