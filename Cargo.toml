@@ -8,7 +8,7 @@ license = "Apache-2.0"
 repository = "https://github.com/rkuhn/swarm-discovery"
 readme = "README.md"
 keywords = ["swarm", "discovery", "udp"]
-categories = ["network-programming", "asynchronous", "distributed-systems"]
+categories = ["network-programming", "asynchronous"]
 documentation = "https://docs.rs/swarm-discovery"
 
 [dependencies]
