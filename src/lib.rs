@@ -164,6 +164,10 @@ impl Discoverer {
     }
 
     /// Register a callback to be called when a peer is discovered or its addresses change.
+    ///
+    /// When a peer is removed, the callback will be called with an empty list of addresses.
+    /// This happens after not receiving any responses for a time period greater than three
+    /// times the estimated swarm size divided by the response frequency.
     pub fn with_callback(mut self, callback: impl FnMut(&str, &Peer) + Send + 'static) -> Self {
         self.callback = Box::new(callback);
         self
@@ -172,6 +176,7 @@ impl Discoverer {
     /// Set the discovery time target.
     ///
     /// After roughly this time a new peer should have discovered some parts of the swarm.
+    /// The default is 10 seconds.
     pub fn with_cadence(mut self, tau: Duration) -> Self {
         self.tau = tau;
         self
@@ -184,6 +189,8 @@ impl Discoverer {
     ///
     /// With cadence 10sec, setting this to 1.0Hz means that at most 10 responses will be received per cycle.
     /// Setting it to 0.5Hz means that up to roughly 5 responses will be received per cycle.
+    ///
+    /// The default is 1.0Hz.
     pub fn with_response_rate(mut self, phi: f32) -> Self {
         self.phi = phi;
         self
