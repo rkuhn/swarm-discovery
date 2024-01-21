@@ -11,8 +11,6 @@ keywords = ["swarm", "discovery", "udp"]
 categories = ["network-programming", "asynchronous", "distributed-systems"]
 documentation = "https://docs.rs/swarm-discovery"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 acto = { version = "0.7.0", features = ["tokio"] }
 anyhow = "1.0.79"
