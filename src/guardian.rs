@@ -10,8 +10,10 @@ pub async fn guardian(
     service_name: Name,
 ) {
     let callback = replace(&mut discoverer.callback, Box::new(|_, _| {}));
+    let tau = discoverer.tau;
+    let phi = discoverer.phi;
     let upd_ref = ctx.supervise(
-        ctx.spawn("updater", move |ctx| updater(ctx, callback))
+        ctx.spawn("updater", move |ctx| updater(ctx, tau, phi, callback))
             .map_handle(Ok),
     );
 

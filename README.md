@@ -24,5 +24,5 @@ Each node responds to a mDNS query according to the following algorithm:
 ## mDNS usage
 
 - configurable service name NAME
-- queries sent for PTR records of the form `_NAME._tcp.local.`
-- responses give SRV records of the form `PEER_ID._NAME._tcp.local.` -> `PEER_ID.local.` (and associated A/AAAA records)
+- queries sent for PTR records of the form `_NAME._udp.local.`
+- responses give SRV records of the form `PEER_ID._NAME._udp.local.` -> `PEER_ID.local.` (and associated A/AAAA records)

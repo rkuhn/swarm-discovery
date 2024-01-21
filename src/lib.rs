@@ -9,8 +9,15 @@ mod updater;
 use acto::{AcTokio, ActoHandle, ActoRuntime, TokioJoinHandle};
 use anyhow::Context;
 use hickory_proto::rr::Name;
+use serde::{Deserialize, Serialize};
 use socket::Sockets;
-use std::{collections::BTreeMap, net::IpAddr, str::FromStr, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fmt::Display,
+    net::IpAddr,
+    str::FromStr,
+    time::{Duration, Instant},
+};
 use tokio::runtime::Handle;
 
 type Callback = Box<dyn FnMut(&str, &Peer) + Send + 'static>;
@@ -48,6 +55,7 @@ type Callback = Box<dyn FnMut(&str, &Peer) + Send + 'static>;
 /// ```
 pub struct Discoverer {
     name: String,
+    protocol: Protocol,
     peer_id: String,
     peers: BTreeMap<String, Peer>,
     callback: Callback,
@@ -60,10 +68,11 @@ pub struct Discoverer {
 ///
 /// The discovery yields service instances, which are located by a port and a list of IP addresses.
 /// Both IPv4 and IPv6 addresses may be present, depending on the configuration via [Discoverer::with_ip_class].
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Peer {
     pub port: u16,
     pub addrs: Vec<IpAddr>,
+    pub last_seen: Instant,
 }
 
 /// This selects which sockets will be created by the [Discoverer].
@@ -71,7 +80,7 @@ pub struct Peer {
 /// Responses will be sent on that socket which received the query.
 /// Queries will prefer v4 when available.
 /// Default is [IpClass::V4AndV6].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum IpClass {
     V4Only,
     V6Only,
@@ -91,6 +100,25 @@ impl IpClass {
     }
 }
 
+/// This selects which protocol suffix to use for the service name.
+///
+/// Default is [Protocol::Udp].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Protocol {
+    #[default]
+    Udp,
+    Tcp,
+}
+
+impl Display for Protocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Protocol::Udp => write!(f, "_udp"),
+            Protocol::Tcp => write!(f, "_tcp"),
+        }
+    }
+}
+
 impl Discoverer {
     /// Creates a new builder for a swarm discovery service.
     ///
@@ -99,6 +127,7 @@ impl Discoverer {
     pub fn new(name: String, peer_id: String) -> Self {
         Self {
             name,
+            protocol: Protocol::default(),
             peer_id,
             peers: BTreeMap::new(),
             callback: Box::new(|_, _| {}),
@@ -108,14 +137,29 @@ impl Discoverer {
         }
     }
 
+    /// Set the protocol suffix to use for the service name.
+    ///
+    /// Note that this does not change the protocol used for discovery, which is always UDP-based mDNS.
+    /// Default is [Protocol::Udp].
+    pub fn with_protocol(mut self, protocol: Protocol) -> Self {
+        self.protocol = protocol;
+        self
+    }
+
     /// Register the local peer’s port and IP addresses.
     ///
     /// If this method is not called, the local peer will not advertise itself.
     /// It can still discover others.
     pub fn with_addrs(mut self, port: u16, mut addrs: Vec<IpAddr>) -> Self {
         addrs.sort();
-        self.peers
-            .insert(self.peer_id.clone(), Peer { port, addrs });
+        self.peers.insert(
+            self.peer_id.clone(),
+            Peer {
+                port,
+                addrs,
+                last_seen: Instant::now(),
+            },
+        );
         self
     }
 
@@ -162,7 +206,7 @@ impl Discoverer {
         let _entered = handle.enter();
         let sockets = Sockets::new(self.class)?;
 
-        let service_name = Name::from_str(&format!("_{}._udp.local.", self.name))
+        let service_name = Name::from_str(&format!("_{}.{}.local.", self.name, self.protocol))
             .context("constructing service name")?;
         // need to test this here so it won’t fail in the actor
         Name::from_str(&self.peer_id)

@@ -1,6 +1,6 @@
 use crate::{
     socket::{Mode, Sockets},
-    Discoverer, Peer,
+    updater, Discoverer, Peer,
 };
 use acto::{AcTokioRuntime, ActoCell, ActoInput, ActoRef};
 use hickory_proto::{
@@ -10,33 +10,50 @@ use hickory_proto::{
 use rand::{thread_rng, Rng};
 use std::{collections::BTreeMap, net::IpAddr, str::FromStr, time::Duration};
 
+const RESPONSE_DELAY: Duration = Duration::from_millis(100);
+
 pub enum MdnsMsg {
     QueryV4,
     QueryV6,
     Response(BTreeMap<String, Peer>),
     Timeout(usize),
+    SizeUpdate(usize),
 }
 
 pub async fn sender(
     mut ctx: ActoCell<MdnsMsg, AcTokioRuntime>,
     sockets: Sockets,
-    updater: ActoRef<BTreeMap<String, Peer>>,
+    updater: ActoRef<updater::Input>,
     discoverer: Discoverer,
     service_name: Name,
 ) {
     let tau = discoverer.tau;
     let phi = discoverer.phi;
+    let cutoff = (tau.as_secs_f32() * phi).ceil() as u32;
 
     let query = make_query(&service_name);
     let response = make_response(&discoverer, &service_name);
 
     let mut timeout_count = 0;
 
+    updater.send(updater::Input::SizeSubscription(
+        ctx.me().contramap(MdnsMsg::SizeUpdate),
+    ));
+
+    let mut swarm_size = 1;
+    let mut extra_delay = Duration::ZERO;
+    let mut has_responded = false;
+
     loop {
         let me = ctx.me();
         let timeout = tokio::spawn(async move {
+            // grow the interval from which the randomized part is draw
+            // with the swarm size to keep the number of duplicates low
+            let interval = tau * swarm_size as u32 / 10;
             let millionth = thread_rng().gen_range(0..1_000_000);
-            tokio::time::sleep(tau + tau / 1_000_000 * millionth).await;
+            let delay = tau + interval / 1_000_000 * millionth;
+            tracing::debug!(?delay, "waiting for query");
+            tokio::time::sleep(delay).await;
             me.send(MdnsMsg::Timeout(timeout_count));
         });
 
@@ -52,13 +69,16 @@ pub async fn sender(
                         break Mode::V6;
                     }
                     MdnsMsg::Response(resp) => {
-                        updater.send(resp);
+                        updater.send(updater::Input::Peers(resp));
                     }
                     MdnsMsg::Timeout(count) if count == timeout_count => {
                         sockets.send_msg(&query, Mode::Any).await;
                         break Mode::Any;
                     }
                     MdnsMsg::Timeout(_) => {}
+                    MdnsMsg::SizeUpdate(size) => {
+                        swarm_size = size;
+                    }
                 }
             } else {
                 return;
@@ -68,20 +88,34 @@ pub async fn sender(
         timeout_count += 1;
 
         let me = ctx.me();
+        // for fairness: if we have sent and the swarm is large, delay some more
+        if has_responded {
+            extra_delay = RESPONSE_DELAY * (swarm_size as u32 / cutoff).min(10);
+        } else {
+            extra_delay = extra_delay.checked_sub(RESPONSE_DELAY).unwrap_or_default();
+        }
         let timeout = tokio::spawn(async move {
+            // grow the interval from which the randomized part is draw
+            // with the swarm size to keep the number of duplicates low
+            // goal is "cutoff within 100ms"
+            let interval = RESPONSE_DELAY * swarm_size as u32 / cutoff;
             let millionth = thread_rng().gen_range(0..1_000_000);
-            tokio::time::sleep(Duration::from_millis(100) / 1_000_000 * millionth).await;
+            let mut delay = interval / 1_000_000 * millionth;
+            delay += extra_delay;
+            tracing::debug!(?delay, "waiting to respond");
+            tokio::time::sleep(delay).await;
             me.send(MdnsMsg::Timeout(timeout_count));
         });
 
         let mut response_count = 0;
+        has_responded = false;
         loop {
             if let ActoInput::Message(msg) = ctx.recv().await {
                 match msg {
                     MdnsMsg::Response(resp) => {
-                        response_count += resp.len();
-                        updater.send(resp);
-                        if response_count > (tau.as_secs_f32() * phi) as usize {
+                        response_count += resp.len() as u32;
+                        updater.send(updater::Input::Peers(resp));
+                        if response_count >= cutoff {
                             timeout.abort();
                             break;
                         }
@@ -89,8 +123,12 @@ pub async fn sender(
                     MdnsMsg::Timeout(count) if count == timeout_count => {
                         if let Some(response) = &response {
                             sockets.send_msg(response, mode).await;
+                            has_responded = true;
                         }
                         break;
+                    }
+                    MdnsMsg::SizeUpdate(size) => {
+                        swarm_size = size;
                     }
                     _ => {}
                 }

@@ -5,7 +5,9 @@ use hickory_proto::{
     op::Message,
     rr::{DNSClass, Name, RData, RecordType},
 };
-use std::{borrow::Cow, collections::BTreeMap, net::IpAddr, str::FromStr, sync::Arc};
+use std::{
+    borrow::Cow, collections::BTreeMap, net::IpAddr, str::FromStr, sync::Arc, time::Instant,
+};
 use tokio::net::UdpSocket;
 
 pub async fn receiver(
@@ -136,7 +138,12 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
     let mut ret = BTreeMap::new();
     for (peer_id, (port, mut addrs)) in peer_ids {
         addrs.sort();
-        let peer = Peer { port, addrs };
+        let last_seen = Instant::now();
+        let peer = Peer {
+            port,
+            addrs,
+            last_seen,
+        };
         ret.insert(peer_id, peer);
     }
     Some(MdnsMsg::Response(ret))
