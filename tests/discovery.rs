@@ -13,6 +13,7 @@ fn test() {
     use serde::{Deserialize, Serialize};
     use std::{
         collections::{BTreeMap, BTreeSet},
+        net::IpAddr,
         thread,
         time::{Duration, Instant},
     };
@@ -22,8 +23,15 @@ fn test() {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     enum Disco {
-        Discover { host: String, peer: String },
-        Forget { host: String, peer: String },
+        Discover {
+            host: String,
+            peer: String,
+            addrs: Vec<(IpAddr, u16)>,
+        },
+        Forget {
+            host: String,
+            peer: String,
+        },
     }
 
     #[machine]
@@ -51,6 +59,7 @@ fn test() {
 
         let _guard = Discoverer::new("swarm".to_owned(), peer_id.clone())
             .with_protocol(protocol)
+            .with_addrs(port + 10, addrs.iter().take(1).copied())
             .with_addrs(port, addrs)
             .with_callback(move |pid, peer| {
                 let msg = if peer.addrs.is_empty() {
@@ -62,6 +71,7 @@ fn test() {
                     Disco::Discover {
                         host: peer_id.clone(),
                         peer: pid.to_owned(),
+                        addrs: peer.addrs.clone(),
                     }
                 };
                 snd.send(msg).expect("send");
@@ -136,7 +146,7 @@ fn test() {
         let start = Instant::now();
         let mut discoveries = 0;
         loop {
-            let Disco::Discover { host, peer } =
+            let Disco::Discover { host, peer, .. } =
                 rx_f.try_recv_timeout(Duration::from_secs(5)).unwrap()
             else {
                 continue;
@@ -177,7 +187,7 @@ fn test() {
         let start = Instant::now();
         discoveries = 0;
         while discovered.len() < (N + 1) {
-            let Disco::Discover { host, peer } =
+            let Disco::Discover { host, peer, .. } =
                 rx_f.try_recv_timeout(Duration::from_secs(5)).unwrap()
             else {
                 continue;
@@ -267,7 +277,7 @@ fn test() {
 
         let mut discovered = BTreeSet::new();
         while discovered.len() < 9 {
-            let Disco::Discover { host, peer } =
+            let Disco::Discover { host, peer, .. } =
                 rx_f.try_recv_timeout(Duration::from_secs(5)).unwrap()
             else {
                 continue;
@@ -296,11 +306,68 @@ fn test() {
         tx3.send(()).expect("send");
     }
 
+    fn simple() {
+        let rt = Builder::new_current_thread()
+            .build()
+            .expect("build runtime");
+
+        let mut sim = Netsim::<String, String>::new();
+        let net = sim.spawn_network(Ipv4Range::random_local_subnet());
+
+        // one channel for the discoveries
+        let (tx_f, rx_f) = channel().expect("channel");
+
+        let (_, tx1) = rt.block_on(spawn(
+            &mut sim,
+            net,
+            Protocol::Udp,
+            Duration::from_secs(1),
+            1f32,
+            0,
+            tx_f.clone(),
+        ));
+
+        let (_, tx2) = rt.block_on(spawn(
+            &mut sim,
+            net,
+            Protocol::Udp,
+            Duration::from_secs(1),
+            1f32,
+            1,
+            tx_f.clone(),
+        ));
+
+        let Disco::Discover { host, peer, addrs } =
+            rx_f.try_recv_timeout(Duration::from_secs(5)).expect("recv")
+        else {
+            panic!("no discovery");
+        };
+        assert!(host.starts_with("peer_id"));
+        assert!(peer.starts_with("peer_id"));
+        assert!(addrs.len() > 1);
+        let mut addr_map = BTreeMap::new();
+        for (ip, port) in addrs {
+            addr_map.entry(port).or_insert_with(Vec::new).push(ip);
+        }
+        assert_eq!(addr_map.len(), 2);
+        let mut port_iter = addr_map.keys();
+        let port1 = port_iter.next().expect("port1");
+        let port2 = port_iter.next().expect("port2");
+        assert_eq!(addr_map.get(port2).expect("port2").len(), 1);
+        let addr = addr_map.get(port2).expect("port2")[0];
+        let addrs = addr_map.get(port1).expect("port1");
+        assert!(addrs.len() > 1);
+        assert!(addrs.iter().any(|a| *a == addr));
+
+        tx1.send(()).expect("send");
+        tx2.send(()).expect("send");
+    }
+
     fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_test_writer()
         .init();
 
     declare_machines!(disco);
-    run_tests!(discover_udp, discover_tcp, gc);
+    run_tests!(discover_udp, discover_tcp, gc, simple);
 }
