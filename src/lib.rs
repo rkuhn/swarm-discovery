@@ -70,8 +70,7 @@ pub struct Discoverer {
 /// Both IPv4 and IPv6 addresses may be present, depending on the configuration via [Discoverer::with_ip_class].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Peer {
-    pub port: u16,
-    pub addrs: Vec<IpAddr>,
+    pub addrs: Vec<(IpAddr, u16)>,
     pub last_seen: Instant,
 }
 
@@ -146,20 +145,21 @@ impl Discoverer {
         self
     }
 
-    /// Register the local peer’s port and IP addresses.
+    /// Register the local peer’s port and IP addresses, may be called multiple times with additive effect.
     ///
     /// If this method is not called, the local peer will not advertise itself.
     /// It can still discover others.
-    pub fn with_addrs(mut self, port: u16, mut addrs: Vec<IpAddr>) -> Self {
-        addrs.sort();
-        self.peers.insert(
-            self.peer_id.clone(),
-            Peer {
-                port,
-                addrs,
+    pub fn with_addrs(mut self, port: u16, addrs: impl IntoIterator<Item = IpAddr>) -> Self {
+        let me = self
+            .peers
+            .entry(self.peer_id.clone())
+            .or_insert_with(|| Peer {
+                addrs: Vec::new(),
                 last_seen: Instant::now(),
-            },
-        );
+            });
+        me.addrs.extend(addrs.into_iter().map(|addr| (addr, port)));
+        me.addrs.sort_unstable();
+        me.addrs.dedup();
         self
     }
 

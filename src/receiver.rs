@@ -62,7 +62,8 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
     }
 
     let local = Name::from_str("local.").unwrap();
-    let mut peer_ids: BTreeMap<String, (u16, Vec<IpAddr>)> = BTreeMap::new();
+
+    let mut peer_ports: BTreeMap<Name, Vec<(u16, String)>> = BTreeMap::new();
     for response in packet.answers() {
         if response.dns_class() != DNSClass::IN {
             tracing::trace!(
@@ -77,26 +78,30 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
             continue;
         }
         tracing::debug!("received mDNS response for {}", name);
-        if let Some(RData::SRV(srv)) = response.data() {
-            let target = srv.target();
-            let target_host = target.iter().next();
-            if target_host != name.iter().next() {
-                tracing::debug!("received mDNS response for non-matching target {}", target);
-                continue;
-            }
-            let Cow::Borrowed(host) = String::from_utf8_lossy(target_host.unwrap()) else {
-                tracing::debug!("received mDNS response with invalid target {:?}", target);
-                continue;
-            };
-            peer_ids.insert(host.to_owned(), (srv.port(), vec![]));
-        } else {
+        let Some(peer_id_bytes) = name.iter().next() else {
+            continue;
+        };
+        let Cow::Borrowed(peer_id) = String::from_utf8_lossy(peer_id_bytes) else {
+            tracing::debug!(
+                "received mDNS response with invalid peer ID {:?}",
+                peer_id_bytes
+            );
+            continue;
+        };
+        let Some(RData::SRV(srv)) = response.data() else {
             tracing::trace!(
                 "received mDNS response with wrong data {:?}",
                 response.data()
             );
             continue;
-        }
+        };
+        peer_ports
+            .entry(srv.target().clone())
+            .or_default()
+            .push((srv.port(), peer_id.to_owned()));
     }
+
+    let mut peer_addrs: BTreeMap<String, Vec<(IpAddr, u16)>> = BTreeMap::new();
     for additional in packet.additionals() {
         if additional.dns_class() != DNSClass::IN {
             tracing::trace!(
@@ -111,21 +116,9 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
             continue;
         }
         tracing::trace!("received mDNS additional for {}", name);
-        let Cow::Borrowed(name) = String::from_utf8_lossy(name.iter().next().unwrap()) else {
-            tracing::debug!("received mDNS response with invalid target {:?}", name);
-            continue;
-        };
-        match additional.data() {
-            Some(RData::A(a)) => {
-                if let Some((_, addrs)) = peer_ids.get_mut(name) {
-                    addrs.push(a.0.into());
-                }
-            }
-            Some(RData::AAAA(a)) => {
-                if let Some((_, addrs)) = peer_ids.get_mut(name) {
-                    addrs.push(a.0.into());
-                }
-            }
+        let ip: IpAddr = match additional.data() {
+            Some(RData::A(a)) => a.0.into(),
+            Some(RData::AAAA(a)) => a.0.into(),
             _ => {
                 tracing::debug!(
                     "received mDNS additional with wrong data {:?}",
@@ -133,17 +126,20 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
                 );
                 continue;
             }
+        };
+        for (port, peer_id) in peer_ports.get(name).map(|x| &**x).unwrap_or(&[]) {
+            peer_addrs
+                .entry(peer_id.clone())
+                .or_default()
+                .push((ip, *port));
         }
     }
     let mut ret = BTreeMap::new();
-    for (peer_id, (port, mut addrs)) in peer_ids {
-        addrs.sort();
+    for (peer_id, mut addrs) in peer_addrs {
+        addrs.sort_unstable();
+        addrs.dedup();
         let last_seen = Instant::now();
-        let peer = Peer {
-            port,
-            addrs,
-            last_seen,
-        };
+        let peer = Peer { addrs, last_seen };
         ret.insert(peer_id, peer);
     }
     Some(MdnsMsg::Response(ret))

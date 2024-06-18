@@ -67,7 +67,6 @@ pub async fn updater(
                             peer_id,
                             &Peer {
                                 last_seen: peer.last_seen,
-                                port: peer.port,
                                 addrs: vec![],
                             },
                         );
