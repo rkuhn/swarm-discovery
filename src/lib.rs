@@ -70,8 +70,29 @@ pub struct Discoverer {
 /// Both IPv4 and IPv6 addresses may be present, depending on the configuration via [Discoverer::with_ip_class].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Peer {
-    pub addrs: Vec<(IpAddr, u16)>,
-    pub last_seen: Instant,
+    addrs: Vec<(IpAddr, u16)>,
+    last_seen: Instant,
+}
+
+impl Peer {
+    /// Known addresses of this peer, or empty slice in case the peer has expired.
+    pub fn addrs(&self) -> &[(IpAddr, u16)] {
+        &self.addrs
+    }
+
+    /// Returns true if this peer has expired.
+    pub fn is_expiry(&self) -> bool {
+        self.addrs.len() == 0
+    }
+
+    /// Return the age of this peer snapshot.
+    /// 
+    /// Note that observations performed after this Peer structure was handed to
+    /// your code are not taken into account; this yields the age of this Peer
+    /// snapshot.
+    pub fn age(&self) -> Duration {
+        self.last_seen.elapsed()
+    }
 }
 
 /// This selects which sockets will be created by the [Discoverer].
