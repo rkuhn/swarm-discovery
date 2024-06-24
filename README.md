@@ -26,7 +26,7 @@ Each node responds to a mDNS query according to the following algorithm:
     - `extra` is set to max(0, `extra` - 100ms) if the peer has not sent a response in the previous cycle
 2. set counter to zero
 3. upon reception of another node’s mDNS response to this query, increment the counter
-4. when counter is greater than τ•φ go to query mode
+4. when counter is greater than τ•φ go to query mode (note that this assumes that τ•φ>1 for proper operation)
 5. upon timeout send response and go to query mode
 
 Responses received in either mode are used to discover peers.
