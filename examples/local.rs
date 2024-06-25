@@ -36,9 +36,13 @@ fn main() {
         .expect("local_addr")
         .port();
 
+    println!("peer_id: {}", peer_id);
+    println!("addrs: {:?}", addrs);
+
     // start announcing and discovering
     let _guard = Discoverer::new("swarm".to_owned(), peer_id)
-        .with_addrs(port, addrs)
+        .with_addrs(port, addrs.iter().take(1).copied())
+        .with_addrs(port + 1, addrs)
         .with_callback(|peer_id, addrs| {
             println!("discovered {}: {:?}", peer_id, addrs);
         })

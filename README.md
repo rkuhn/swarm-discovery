@@ -57,6 +57,10 @@ The `extra` delay also solves potential fairness issues when multiple fresh node
 
 ## mDNS usage
 
+The facilities described in [RFC6762](https://datatracker.ietf.org/doc/html/rfc6762) and [RFC6763](https://datatracker.ietf.org/doc/html/rfc6763) are used as follows:
+
 - configurable service name NAME
 - queries sent for PTR records of the form `_NAME._udp.local.` (TCP analog)
 - responses give SRV records of the form `PEER_ID._NAME._udp.local.` -> `PEER_ID.local.` (and associated A/AAAA records)
+
+If multiple ports are associated to their respective IP addresses, there will be one SRV record per port pointing to a resource name of the form `PEER_ID-PORT._NAME._udp.local`.

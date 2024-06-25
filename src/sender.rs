@@ -156,32 +156,40 @@ fn make_response(discoverer: &Discoverer, service_name: &Name) -> Option<Message
         msg.set_message_type(MessageType::Response);
         msg.set_authoritative(true);
 
-        let target = Name::from_str(&format!("{}.local.", discoverer.peer_id))
-            .expect("PeerId was checked in spawn()");
         let my_srv_name = Name::from_str(&discoverer.peer_id)
             .expect("PeerId was checked in spawn()")
             .append_domain(service_name)
             .expect("was checked in spawn()");
-        msg.add_answer(Record::from_rdata(
-            my_srv_name,
-            0,
-            RData::SRV(rdata::SRV::new(0, 0, peer.port, target.clone())),
-        ));
-        for addr in &peer.addrs {
-            match addr {
-                IpAddr::V4(addr) => {
-                    msg.add_additional(Record::from_rdata(
-                        target.clone(),
-                        0,
-                        RData::A(rdata::A::from(*addr)),
-                    ));
-                }
-                IpAddr::V6(addr) => {
-                    msg.add_additional(Record::from_rdata(
-                        target.clone(),
-                        0,
-                        RData::AAAA(rdata::AAAA::from(*addr)),
-                    ));
+
+        let mut srv_map = BTreeMap::new();
+        for (ip, port) in &peer.addrs {
+            srv_map.entry(*port).or_insert_with(Vec::new).push(*ip);
+        }
+
+        for (port, addrs) in srv_map {
+            let target = Name::from_str(&format!("{}-{}.local.", discoverer.peer_id, port))
+                .expect("PeerId was checked in spawn()");
+            msg.add_answer(Record::from_rdata(
+                my_srv_name.clone(),
+                0,
+                RData::SRV(rdata::SRV::new(0, 0, port, target.clone())),
+            ));
+            for addr in addrs {
+                match addr {
+                    IpAddr::V4(addr) => {
+                        msg.add_additional(Record::from_rdata(
+                            target.clone(),
+                            0,
+                            RData::A(rdata::A::from(addr)),
+                        ));
+                    }
+                    IpAddr::V6(addr) => {
+                        msg.add_additional(Record::from_rdata(
+                            target.clone(),
+                            0,
+                            RData::AAAA(rdata::AAAA::from(addr)),
+                        ));
+                    }
                 }
             }
         }
