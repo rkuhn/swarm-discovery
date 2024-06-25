@@ -70,8 +70,29 @@ pub struct Discoverer {
 /// Both IPv4 and IPv6 addresses may be present, depending on the configuration via [Discoverer::with_ip_class].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Peer {
-    pub addrs: Vec<(IpAddr, u16)>,
-    pub last_seen: Instant,
+    addrs: Vec<(IpAddr, u16)>,
+    last_seen: Instant,
+}
+
+impl Peer {
+    /// Known addresses of this peer, or empty slice in case the peer has expired.
+    pub fn addrs(&self) -> &[(IpAddr, u16)] {
+        &self.addrs
+    }
+
+    /// Returns true if this peer has expired.
+    pub fn is_expiry(&self) -> bool {
+        self.addrs.len() == 0
+    }
+
+    /// Return the age of this peer snapshot.
+    ///
+    /// Note that observations performed after this Peer structure was handed to
+    /// your code are not taken into account; this yields the age of this Peer
+    /// snapshot.
+    pub fn age(&self) -> Duration {
+        self.last_seen.elapsed()
+    }
 }
 
 /// This selects which sockets will be created by the [Discoverer].
@@ -136,6 +157,15 @@ impl Discoverer {
         }
     }
 
+    /// Creates a new builder with default cadence and response rate for human interactive applications.
+    /// 
+    /// This sets τ=0.7sec and φ=2.5, see [Discoverer::new] for the `name` and `peer_id` arguments.
+    pub fn new_interactive(name: String, peer_id: String) -> Self {
+        Self::new(name, peer_id)
+            .with_cadence(Duration::from_millis(700))
+            .with_response_rate(2.5)
+    }
+
     /// Set the protocol suffix to use for the service name.
     ///
     /// Note that this does not change the protocol used for discovery, which is always UDP-based mDNS.
@@ -176,19 +206,27 @@ impl Discoverer {
     /// Set the discovery time target.
     ///
     /// After roughly this time a new peer should have discovered some parts of the swarm.
+    /// The worst-case latency is 1.2•τ.
+    ///
+    /// Note that the product τ•φ must be greater than 1 for the rate limiting to work correctly.
+    /// For human interactive applications it is recommended to set τ=0.7s and φ=2.5 (see [Discoverer::new_interactive]).
+    ///
     /// The default is 10 seconds.
     pub fn with_cadence(mut self, tau: Duration) -> Self {
         self.tau = tau;
         self
     }
 
-    /// Set the response frequency target.
+    /// Set the response frequency target in Hz.
     ///
     /// While query-response cycles follow the configured cadence (see [Discoverer::with_cadence]),
     /// the response rate determines the (soft) maximum of how many responses should be received per second.
     ///
     /// With cadence 10sec, setting this to 1.0Hz means that at most 10 responses will be received per cycle.
     /// Setting it to 0.5Hz means that up to roughly 5 responses will be received per cycle.
+    ///
+    /// Note that the product τ•φ must be greater than 1 for the rate limiting to work correctly.
+    /// For human interactive applications it is recommended to set τ=0.7s and φ=2.5 (see [Discoverer::new_interactive]).
     ///
     /// The default is 1.0Hz.
     pub fn with_response_rate(mut self, phi: f32) -> Self {

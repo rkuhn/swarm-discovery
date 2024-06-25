@@ -62,7 +62,7 @@ fn test() {
             .with_addrs(port + 10, addrs.iter().take(1).copied())
             .with_addrs(port, addrs)
             .with_callback(move |pid, peer| {
-                let msg = if peer.addrs.is_empty() {
+                let msg = if peer.is_expiry() {
                     Disco::Forget {
                         host: peer_id.clone(),
                         peer: pid.to_owned(),
@@ -71,7 +71,7 @@ fn test() {
                     Disco::Discover {
                         host: peer_id.clone(),
                         peer: pid.to_owned(),
-                        addrs: peer.addrs.clone(),
+                        addrs: peer.addrs().to_owned(),
                     }
                 };
                 snd.send(msg).expect("send");

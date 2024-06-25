@@ -40,7 +40,7 @@ fn main() {
     println!("addrs: {:?}", addrs);
 
     // start announcing and discovering
-    let _guard = Discoverer::new("swarm".to_owned(), peer_id)
+    let _guard = Discoverer::new_interactive("swarm".to_owned(), peer_id)
         .with_addrs(port, addrs.iter().take(1).copied())
         .with_addrs(port + 1, addrs)
         .with_callback(|peer_id, addrs| {
