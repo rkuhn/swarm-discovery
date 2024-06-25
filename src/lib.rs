@@ -9,7 +9,6 @@ mod updater;
 use acto::{AcTokio, ActoHandle, ActoRuntime, TokioJoinHandle};
 use anyhow::Context;
 use hickory_proto::rr::Name;
-use serde::{Deserialize, Serialize};
 use socket::Sockets;
 use std::{
     collections::BTreeMap,
@@ -100,7 +99,8 @@ impl Peer {
 /// Responses will be sent on that socket which received the query.
 /// Queries will prefer v4 when available.
 /// Default is [IpClass::V4AndV6].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IpClass {
     V4Only,
     V6Only,
@@ -123,7 +123,8 @@ impl IpClass {
 /// This selects which protocol suffix to use for the service name.
 ///
 /// Default is [Protocol::Udp].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Protocol {
     #[default]
     Udp,
