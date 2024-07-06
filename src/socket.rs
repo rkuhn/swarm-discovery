@@ -1,5 +1,5 @@
 use crate::IpClass;
-use anyhow::Context;
+use anyhow::{bail, Context};
 use hickory_proto::op::Message;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
@@ -57,7 +57,7 @@ pub fn socket_v6() -> anyhow::Result<UdpSocket> {
     UdpSocket::from_std(std::net::UdpSocket::from(socket)).context("from_std")
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Sockets {
     v4: Option<Arc<UdpSocket>>,
     v6: Option<Arc<UdpSocket>>,
@@ -65,16 +65,28 @@ pub struct Sockets {
 
 impl Sockets {
     pub fn new(class: IpClass) -> anyhow::Result<Self> {
-        Ok(Self {
-            v4: class
-                .has_v4()
-                .then(|| socket_v4().context("socket_v4").map(Arc::new))
-                .transpose()?,
-            v6: class
-                .has_v6()
-                .then(|| socket_v6().context("socket_v6").map(Arc::new))
-                .transpose()?,
-        })
+        match class {
+            IpClass::Auto => {
+                let socket = Self {
+                    v4: socket_v4().ok().map(Arc::new),
+                    v6: socket_v6().ok().map(Arc::new),
+                };
+                if socket.v4.is_none() && socket.v6.is_none() {
+                    bail!("Socket cannot bind to ipv4 or ipv6");
+                }
+                Ok(socket)
+            }
+            _ => Ok(Self {
+                v4: class
+                    .has_v4()
+                    .then(|| socket_v4().context("socket_v4").map(Arc::new))
+                    .transpose()?,
+                v6: class
+                    .has_v6()
+                    .then(|| socket_v6().context("socket_v6").map(Arc::new))
+                    .transpose()?,
+            }),
+        }
     }
 
     pub fn v4(&self) -> Option<Arc<UdpSocket>> {

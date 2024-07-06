@@ -98,14 +98,16 @@ impl Peer {
 ///
 /// Responses will be sent on that socket which received the query.
 /// Queries will prefer v4 when available.
-/// Default is [IpClass::V4AndV6].
+/// Default is [IpClass::Auto], which means the socket will figure out what ip classes are available on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IpClass {
     V4Only,
     V6Only,
-    #[default]
     V4AndV6,
+    /// Allow the socket to attempt to bind to both ipv4 and ipv6. Only error if the socket is unable to bind to either.
+    #[default]
+    Auto,
 }
 
 impl IpClass {
@@ -159,7 +161,7 @@ impl Discoverer {
     }
 
     /// Creates a new builder with default cadence and response rate for human interactive applications.
-    /// 
+    ///
     /// This sets τ=0.7sec and φ=2.5, see [Discoverer::new] for the `name` and `peer_id` arguments.
     pub fn new_interactive(name: String, peer_id: String) -> Self {
         Self::new(name, peer_id)
@@ -251,6 +253,7 @@ impl Discoverer {
     pub fn spawn(self, handle: &Handle) -> anyhow::Result<DropGuard> {
         let _entered = handle.enter();
         let sockets = Sockets::new(self.class)?;
+        tracing::trace!(?sockets, "created new sockets");
 
         let service_name = Name::from_str(&format!("_{}.{}.local.", self.name, self.protocol))
             .context("constructing service name")?;
