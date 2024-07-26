@@ -12,12 +12,11 @@ pub enum Input {
     SizeSubscription(ActoRef<usize>),
 }
 
-fn gc(me: &ActoRef<Input>, interval: Duration) {
-    let me = me.clone();
+fn gc(me: ActoRef<Input>, interval: Duration) {
     tokio::spawn(async move {
         sleep(interval).await;
         if !me.send(Input::GC) {
-            gc(&me, Duration::from_millis(10));
+            gc(me, Duration::from_millis(10));
         }
     });
 }
@@ -29,7 +28,7 @@ pub async fn updater(
     mut callback: Callback,
 ) {
     let gc_interval = tau * 12345 / 9999;
-    gc(&ctx.me(), gc_interval);
+    gc(ctx.me(), gc_interval);
 
     let mut peers = BTreeMap::new();
     let mut subscribers = BTreeSet::<ActoRef<usize>>::new();
@@ -46,7 +45,7 @@ pub async fn updater(
                 }
             }
             Input::GC => {
-                gc(&ctx.me(), gc_interval);
+                gc(ctx.me(), gc_interval);
                 if peers.is_empty() {
                     continue;
                 }
