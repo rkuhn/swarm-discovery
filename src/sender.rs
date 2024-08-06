@@ -1,4 +1,5 @@
 use crate::{
+    guardian,
     socket::{Mode, Sockets},
     updater, Discoverer, Peer,
 };
@@ -8,7 +9,12 @@ use hickory_proto::{
     rr::{rdata, DNSClass, Name, RData, Record, RecordType},
 };
 use rand::{thread_rng, Rng};
-use std::{collections::BTreeMap, net::IpAddr, str::FromStr, time::Duration};
+use std::{
+    collections::BTreeMap,
+    net::IpAddr,
+    str::FromStr,
+    time::{Duration, Instant},
+};
 
 const RESPONSE_DELAY: Duration = Duration::from_millis(100);
 
@@ -18,13 +24,14 @@ pub enum MdnsMsg {
     Response(BTreeMap<String, Peer>),
     Timeout(usize),
     SizeUpdate(usize),
+    Update(guardian::Input),
 }
 
 pub async fn sender(
     mut ctx: ActoCell<MdnsMsg, AcTokioRuntime>,
     sockets: Sockets,
     updater: ActoRef<updater::Input>,
-    discoverer: Discoverer,
+    mut discoverer: Discoverer,
     service_name: Name,
 ) {
     let tau = discoverer.tau;
@@ -32,7 +39,7 @@ pub async fn sender(
     let cutoff = (tau.as_secs_f32() * phi).ceil() as u32;
 
     let query = make_query(&service_name);
-    let response = make_response(&discoverer, &service_name);
+    let mut response = make_response(&discoverer, &service_name);
 
     let mut timeout_count = 0;
 
@@ -78,6 +85,9 @@ pub async fn sender(
                     MdnsMsg::Timeout(_) => {}
                     MdnsMsg::SizeUpdate(size) => {
                         swarm_size = size;
+                    }
+                    MdnsMsg::Update(msg) => {
+                        response = update_response(&mut discoverer, &service_name, msg);
                     }
                 }
             } else {
@@ -130,7 +140,12 @@ pub async fn sender(
                     MdnsMsg::SizeUpdate(size) => {
                         swarm_size = size;
                     }
-                    _ => {}
+                    MdnsMsg::Update(msg) => {
+                        response = update_response(&mut discoverer, &service_name, msg);
+                    }
+                    MdnsMsg::QueryV4 => {}
+                    MdnsMsg::QueryV6 => {}
+                    MdnsMsg::Timeout(_) => {}
                 }
             }
         }
@@ -197,5 +212,45 @@ fn make_response(discoverer: &Discoverer, service_name: &Name) -> Option<Message
     } else {
         tracing::info!("no addresses for peer, not announcing");
         None
+    }
+}
+
+fn update_response(
+    discoverer: &mut Discoverer,
+    service_name: &Name,
+    msg: guardian::Input,
+) -> Option<Message> {
+    match msg {
+        guardian::Input::RemoveAll => {
+            discoverer.peers.remove(&discoverer.peer_id);
+            make_response(discoverer, service_name)
+        }
+        guardian::Input::RemovePort(port) => {
+            if let Some(peers) = discoverer.peers.get_mut(&discoverer.peer_id) {
+                peers.addrs.retain(|(_, p)| *p != port);
+            }
+            make_response(discoverer, service_name)
+        }
+        guardian::Input::RemoveAddr(addr) => {
+            if let Some(peers) = discoverer.peers.get_mut(&discoverer.peer_id) {
+                peers.addrs.retain(|(a, _)| *a != addr);
+            }
+            make_response(discoverer, service_name)
+        }
+        guardian::Input::Add(port, addrs) => {
+            let peer = discoverer
+                .peers
+                .entry(discoverer.peer_id.clone())
+                .or_insert_with(|| Peer {
+                    addrs: Vec::new(),
+                    last_seen: Instant::now(),
+                });
+            for addr in addrs {
+                peer.addrs.push((addr, port));
+                peer.addrs.sort_unstable();
+                peer.addrs.dedup();
+            }
+            make_response(discoverer, service_name)
+        }
     }
 }

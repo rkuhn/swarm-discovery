@@ -1,10 +1,23 @@
-use crate::{receiver::receiver, sender::sender, socket::Sockets, updater::updater, Discoverer};
+use crate::{
+    receiver::receiver,
+    sender::{self, sender},
+    socket::Sockets,
+    updater::updater,
+    Discoverer,
+};
 use acto::{AcTokioRuntime, ActoCell, ActoInput};
 use hickory_proto::rr::Name;
-use std::mem::replace;
+use std::{mem::replace, net::IpAddr};
+
+pub enum Input {
+    RemoveAll,
+    RemovePort(u16),
+    RemoveAddr(IpAddr),
+    Add(u16, Vec<IpAddr>),
+}
 
 pub async fn guardian(
-    mut ctx: ActoCell<(), AcTokioRuntime, anyhow::Result<()>>,
+    mut ctx: ActoCell<Input, AcTokioRuntime, anyhow::Result<()>>,
     mut discoverer: Discoverer,
     sockets: Sockets,
     service_name: Name,
@@ -35,6 +48,7 @@ pub async fn guardian(
     }
 
     if let Some(v6) = sockets2.v6() {
+        let snd_ref = snd_ref.clone();
         ctx.spawn_supervised("receiver_v6", move |ctx| {
             receiver(ctx, service_name, v6, snd_ref)
         });
@@ -43,17 +57,23 @@ pub async fn guardian(
     // only stop when a supervised actor stops
     loop {
         let msg = ctx.recv().await;
-        if let ActoInput::Supervision { id, name, result } = msg {
-            match result {
-                Ok(Ok(_)) => tracing::warn!("actor {:?} ({}) stopped", id, name),
-                Ok(Err(e)) => {
-                    tracing::warn!("actor {:?} ({}) failed: {}", id, name, e)
+        match msg {
+            ActoInput::NoMoreSenders => {}
+            ActoInput::Supervision { id, name, result } => {
+                match result {
+                    Ok(Ok(_)) => tracing::warn!("actor {:?} ({}) stopped", id, name),
+                    Ok(Err(e)) => {
+                        tracing::warn!("actor {:?} ({}) failed: {}", id, name, e)
+                    }
+                    Err(e) => {
+                        tracing::warn!("actor {:?} ({}) aborted: {}", id, name, e);
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("actor {:?} ({}) aborted: {}", id, name, e);
-                }
+                break;
             }
-            break;
+            ActoInput::Message(msg) => {
+                snd_ref.send(sender::MdnsMsg::Update(msg));
+            }
         }
     }
 }

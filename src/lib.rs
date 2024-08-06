@@ -6,7 +6,7 @@ mod sender;
 mod socket;
 mod updater;
 
-use acto::{AcTokio, ActoHandle, ActoRuntime, TokioJoinHandle};
+use acto::{AcTokio, ActoHandle, ActoRef, ActoRuntime, SupervisionRef, TokioJoinHandle};
 use anyhow::Context;
 use hickory_proto::rr::Name;
 use socket::Sockets;
@@ -102,10 +102,15 @@ impl Peer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IpClass {
+    /// Require the socket to bind to ipv4.
     V4Only,
+    /// Require the socket to bind to ipv6.
     V6Only,
+    /// Require the socket to bind to both ipv4 and ipv6.
     V4AndV6,
-    /// Allow the socket to attempt to bind to both ipv4 and ipv6. Only error if the socket is unable to bind to either.
+    /// Allow the socket to attempt to bind to both ipv4 and ipv6.
+    ///
+    /// Only error if the socket is unable to bind to either.
     #[default]
     Auto,
 }
@@ -178,7 +183,7 @@ impl Discoverer {
         self
     }
 
-    /// Register the local peer’s port and IP addresses, may be called multiple times with additive effect.
+    /// Register the local peer's port and IP addresses, may be called multiple times with additive effect.
     ///
     /// If this method is not called, the local peer will not advertise itself.
     /// It can still discover others.
@@ -257,35 +262,141 @@ impl Discoverer {
 
         let service_name = Name::from_str(&format!("_{}.{}.local.", self.name, self.protocol))
             .context("constructing service name")?;
-        // need to test this here so it won’t fail in the actor
+        // need to test this here so it won't fail in the actor
         Name::from_str(&self.peer_id)
             .context("constructing name from peer ID")?
             .append_domain(&service_name)
             .context("appending service name to peer ID")?;
 
         let rt = AcTokio::from_handle("swarm-discovery", handle.clone());
-        let task = rt
-            .spawn_actor("guardian", move |ctx| {
-                guardian::guardian(ctx, self, sockets, service_name)
-            })
-            .handle;
+        let SupervisionRef { me, handle } = rt.spawn_actor("guardian", move |ctx| {
+            guardian::guardian(ctx, self, sockets, service_name)
+        });
 
         Ok(DropGuard {
-            task: Some(task),
+            task: Some(handle),
+            aref: me,
             _rt: rt,
         })
     }
 }
 
 /// A guard which will keep the discovery running until it is dropped.
+///
+/// You can also use this guard to modify the local addresses while the discovery is running.
 #[must_use = "dropping this value will stop the mDNS discovery"]
 pub struct DropGuard {
     task: Option<TokioJoinHandle<()>>,
+    aref: ActoRef<guardian::Input>,
     _rt: AcTokio,
+}
+
+impl DropGuard {
+    /// Remove all local addresses and stop advertising.
+    pub fn remove_all(&self) {
+        self.aref.send(guardian::Input::RemoveAll);
+    }
+
+    /// Remove a specific port from the local addresses.
+    pub fn remove_port(&self, port: u16) {
+        self.aref.send(guardian::Input::RemovePort(port));
+    }
+
+    /// Remove a specific address from the local addresses.
+    pub fn remove_addr(&self, addr: IpAddr) {
+        self.aref.send(guardian::Input::RemoveAddr(addr));
+    }
+
+    /// Add a port and addresses to the local addresses.
+    pub fn add(&self, port: u16, addrs: Vec<IpAddr>) {
+        self.aref.send(guardian::Input::Add(port, addrs));
+    }
 }
 
 impl Drop for DropGuard {
     fn drop(&mut self) {
         self.task.take().unwrap().abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn test_change_addresses() {
+        let handle = tokio::runtime::Handle::current();
+
+        let peer_id1 = "test_peer1".to_string();
+        let peer_id2 = "test_peer2".to_string();
+
+        let (tx, mut rx) = mpsc::channel(10);
+
+        // First Discoverer (the one we're testing)
+        let discoverer1 = Discoverer::new("test_service".to_string(), peer_id1.clone())
+            .with_addrs(8000, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))])
+            .with_cadence(Duration::from_secs(1))
+            .with_response_rate(1.0);
+
+        let guard1 = discoverer1
+            .spawn(&handle)
+            .expect("Failed to spawn discoverer1");
+
+        // Second Discoverer (to verify the changes)
+        let discoverer2 =
+            Discoverer::new("test_service".to_string(), peer_id2).with_callback(move |id, peer| {
+                if id == peer_id1 {
+                    tx.try_send(peer.clone()).ok();
+                }
+            });
+
+        let _guard2 = discoverer2
+            .spawn(&handle)
+            .expect("Failed to spawn discoverer2");
+
+        // Wait for initial discovery with a timeout
+        let initial_peer = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("Timeout waiting for initial peer")
+            .expect("Failed to receive initial peer");
+        assert_eq!(initial_peer.addrs().len(), 1);
+        assert_eq!(
+            initial_peer.addrs()[0],
+            (IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000)
+        );
+
+        // Change addresses
+        guard1.add(
+            9000,
+            vec![IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))],
+        );
+        guard1.remove_port(8000);
+
+        // Wait for the update to be discovered
+        let updated_peer = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(peer) = rx.recv().await {
+                    if peer.addrs().len() == 1 && peer.addrs()[0].1 == 9000 {
+                        return Ok(peer);
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Failed to receive updated peer"));
+                }
+            }
+        })
+        .await
+        .expect("Timeout waiting for updated peer")
+        .expect("Failed to receive updated peer");
+
+        assert_eq!(updated_peer.addrs().len(), 1);
+        assert_eq!(
+            updated_peer.addrs()[0],
+            (IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)), 9000)
+        );
+
+        // Stop the discoverers
+        drop(guard1);
     }
 }
