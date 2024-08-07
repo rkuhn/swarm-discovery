@@ -9,6 +9,9 @@ use swarm_discovery::Discoverer;
 use tokio::runtime::Builder;
 use tracing_subscriber::{fmt, EnvFilter};
 
+/// To run this example:
+/// In two (or more) different terminals run: `cargo run --example local`
+/// and each one will discover the other peer and track a peer set containing them all
 fn main() {
     // enable logging: use `RUST_LOG=debug` or similar to see logs on STDERR
     fmt()
@@ -48,9 +51,15 @@ fn main() {
     let _guard = Discoverer::new_interactive("swarm".to_owned(), my_peer_id.clone())
         .with_addrs(port, addrs.iter().take(1).copied())
         .with_addrs(port + 1, addrs)
-        .with_callback(move |peer_id, addrs| {
+        .with_callback(move |peer_id, peer| {
             if peer_set.insert(peer_id.to_string()) {
-                println!("new peer discovered {}: {:?}", peer_id, addrs);
+                println!("new peer discovered {peer_id}: {:?}", peer);
+                println!("peer set: {:?}", peer_set);
+            }
+
+            if peer.addrs().is_empty() {
+                println!("peer removed: {peer_id}");
+                peer_set.remove(peer_id);
                 println!("peer set: {:?}", peer_set);
             }
         })
