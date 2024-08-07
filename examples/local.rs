@@ -4,6 +4,7 @@ use std::{
     io::{stderr, stdin},
     net::UdpSocket,
 };
+use std::collections::HashSet;
 use swarm_discovery::Discoverer;
 use tokio::runtime::Builder;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -22,7 +23,7 @@ fn main() {
         .expect("build runtime");
 
     // make up some peer ID
-    let peer_id = format!("peer_id{}", thread_rng().gen_range(0..100));
+    let my_peer_id = format!("peer_id{}", thread_rng().gen_range(0..100));
 
     // get local addresses and make up some port
     let addrs = get_if_addrs()
@@ -36,15 +37,22 @@ fn main() {
         .expect("local_addr")
         .port();
 
-    println!("peer_id: {}", peer_id);
+    println!("my_peer_id: {}", my_peer_id);
     println!("addrs: {:?}", addrs);
 
+    let mut peer_set : HashSet<String> = HashSet::new();
+    peer_set.insert(my_peer_id.clone());
+    println!("peer set: {:?}", peer_set);
+
     // start announcing and discovering
-    let _guard = Discoverer::new_interactive("swarm".to_owned(), peer_id)
+    let _guard = Discoverer::new_interactive("swarm".to_owned(), my_peer_id.clone())
         .with_addrs(port, addrs.iter().take(1).copied())
         .with_addrs(port + 1, addrs)
-        .with_callback(|peer_id, addrs| {
-            println!("discovered {}: {:?}", peer_id, addrs);
+        .with_callback(move |peer_id, addrs| {
+            if peer_set.insert(peer_id.to_string()) {
+                println!("new peer discovered {}: {:?}", peer_id, addrs);
+                println!("peer set: {:?}", peer_set);
+            }
         })
         .spawn(rt.handle())
         .expect("discoverer spawn");
