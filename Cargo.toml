@@ -17,7 +17,7 @@ serde = ["dep:serde"]
 [dependencies]
 acto = { version = "0.7.0", features = ["tokio"] }
 anyhow = "1.0.79"
-hickory-proto = "0.24.0"
+hickory-proto = "=0.25.0-alpha.4"
 rand = "0.8.5"
 serde = { version = "1.0.195", features = ["derive"], optional = true }
 socket2 = { version = "0.5.5", features = ["all"] }
