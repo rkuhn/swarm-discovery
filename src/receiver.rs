@@ -88,7 +88,7 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
             );
             continue;
         };
-        let Some(RData::SRV(srv)) = response.data() else {
+        let RData::SRV(srv) = response.data() else {
             tracing::trace!(
                 "received mDNS response with wrong data {:?}",
                 response.data()
@@ -117,8 +117,8 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
         }
         tracing::trace!("received mDNS additional for {}", name);
         let ip: IpAddr = match additional.data() {
-            Some(RData::A(a)) => a.0.into(),
-            Some(RData::AAAA(a)) => a.0.into(),
+            RData::A(a) => a.0.into(),
+            RData::AAAA(a) => a.0.into(),
             _ => {
                 tracing::debug!(
                     "received mDNS additional with wrong data {:?}",
