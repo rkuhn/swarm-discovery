@@ -6,15 +6,13 @@ use crate::{
 use acto::{AcTokioRuntime, ActoCell, ActoInput, ActoRef};
 use hickory_proto::{
     op::{Message, MessageType, Query},
-    rr::{rdata, DNSClass, Name, RData, Record, RecordType},
+    rr::{
+        rdata::{self, TXT},
+        DNSClass, Name, RData, Record, RecordType,
+    },
 };
 use rand::{thread_rng, Rng};
-use std::{
-    collections::BTreeMap,
-    net::IpAddr,
-    str::FromStr,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, net::IpAddr, str::FromStr, time::Duration};
 
 const RESPONSE_DELAY: Duration = Duration::from_millis(100);
 
@@ -208,6 +206,15 @@ fn make_response(discoverer: &Discoverer, service_name: &Name) -> Option<Message
                 }
             }
         }
+        for (txt_name, txt_value) in &peer.txt {
+            let Ok(name) = Name::from_str(&format!("{}.{}.local", txt_name, discoverer.peer_id))
+            else {
+                tracing::warn!("invalid txt_name: {txt_name}");
+                continue;
+            };
+            let rdata = TXT::new(vec![txt_value.clone()]);
+            msg.add_additional(Record::from_rdata(name, 0, RData::TXT(rdata)));
+        }
         Some(msg)
     } else {
         tracing::info!("no addresses for peer, not announcing");
@@ -237,20 +244,33 @@ fn update_response(
             }
             make_response(discoverer, service_name)
         }
-        guardian::Input::Add(port, addrs) => {
+        guardian::Input::AddAddr(port, addrs) => {
             let peer = discoverer
                 .peers
                 .entry(discoverer.peer_id.clone())
-                .or_insert_with(|| Peer {
-                    addrs: Vec::new(),
-                    last_seen: Instant::now(),
-                });
+                .or_default();
             for addr in addrs {
                 peer.addrs.push((addr, port));
                 peer.addrs.sort_unstable();
                 peer.addrs.dedup();
             }
             make_response(discoverer, service_name)
+        }
+        guardian::Input::AddTxt(key, value) => {
+            let peer = discoverer
+                .peers
+                .entry(discoverer.peer_id.clone())
+                .or_default();
+            peer.txt.insert(key, value);
+            make_response(discoverer, service_name)
+        }
+        guardian::Input::RemoveTxt(key) => {
+            if let Some(peer) = discoverer.peers.get_mut(&discoverer.peer_id) {
+                let _ = peer.txt.remove(&key);
+                make_response(discoverer, service_name)
+            } else {
+                None
+            }
         }
     }
 }

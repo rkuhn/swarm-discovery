@@ -21,6 +21,8 @@ use tokio::runtime::Handle;
 
 type Callback = Box<dyn FnMut(&str, &Peer) + Send + 'static>;
 
+pub(crate) type TxtData = BTreeMap<String, String>;
+
 /// Builder for a swarm discovery service.
 ///
 /// # Example
@@ -71,6 +73,7 @@ pub struct Discoverer {
 pub struct Peer {
     addrs: Vec<(IpAddr, u16)>,
     last_seen: Instant,
+    txt: TxtData,
 }
 
 impl Peer {
@@ -91,6 +94,21 @@ impl Peer {
     /// snapshot.
     pub fn age(&self) -> Duration {
         self.last_seen.elapsed()
+    }
+
+    /// Returns the TXT records of the peer.
+    pub fn txt(&self) -> &TxtData {
+        &self.txt
+    }
+}
+
+impl Default for Peer {
+    fn default() -> Self {
+        Peer {
+            addrs: Default::default(),
+            last_seen: Instant::now(),
+            txt: Default::default(),
+        }
     }
 }
 
@@ -188,17 +206,17 @@ impl Discoverer {
     /// If this method is not called, the local peer will not advertise itself.
     /// It can still discover others.
     pub fn with_addrs(mut self, port: u16, addrs: impl IntoIterator<Item = IpAddr>) -> Self {
-        let me = self
-            .peers
-            .entry(self.peer_id.clone())
-            .or_insert_with(|| Peer {
-                addrs: Vec::new(),
-                last_seen: Instant::now(),
-            });
+        let me = self.peers.entry(self.peer_id.clone()).or_default();
         me.addrs.extend(addrs.into_iter().map(|addr| (addr, port)));
         me.addrs.sort_unstable();
         me.addrs.dedup();
         self
+    }
+
+    /// Sets TXT records for this peer.
+    pub fn with_txt(mut self, txt: TxtData) {
+        let me = self.peers.entry(self.peer_id.clone()).or_default();
+        me.txt.extend(txt.into_iter());
     }
 
     /// Register a callback to be called when a peer is discovered or its addresses change.
@@ -309,7 +327,17 @@ impl DropGuard {
 
     /// Add a port and addresses to the local addresses.
     pub fn add(&self, port: u16, addrs: Vec<IpAddr>) {
-        self.aref.send(guardian::Input::Add(port, addrs));
+        self.aref.send(guardian::Input::AddAddr(port, addrs));
+    }
+
+    /// Sets a TXT record.
+    pub fn add_txt(&self, key: String, value: String) {
+        self.aref.send(guardian::Input::AddTxt(key, value));
+    }
+
+    /// Removes a TXT record.
+    pub fn remove_txt(&self, key: String) {
+        self.aref.send(guardian::Input::RemoveTxt(key));
     }
 }
 
