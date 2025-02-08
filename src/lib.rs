@@ -214,9 +214,10 @@ impl Discoverer {
     }
 
     /// Sets TXT records for this peer.
-    pub fn with_txt(mut self, txt: TxtData) {
+    pub fn with_txt(mut self, txt: TxtData) -> Self {
         let me = self.peers.entry(self.peer_id.clone()).or_default();
         me.txt.extend(txt.into_iter());
+        self
     }
 
     /// Register a callback to be called when a peer is discovered or its addresses change.

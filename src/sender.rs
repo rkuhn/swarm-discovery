@@ -206,14 +206,11 @@ fn make_response(discoverer: &Discoverer, service_name: &Name) -> Option<Message
                 }
             }
         }
-        for (txt_name, txt_value) in &peer.txt {
-            let Ok(name) = Name::from_str(&format!("{}.{}.local", txt_name, discoverer.peer_id))
-            else {
-                tracing::warn!("invalid txt_name: {txt_name}");
-                continue;
-            };
-            let rdata = TXT::new(vec![txt_value.clone()]);
-            msg.add_additional(Record::from_rdata(name, 0, RData::TXT(rdata)));
+        if !peer.txt.is_empty() {
+            let parts = peer.txt.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            let rdata = TXT::new(parts);
+            let record = Record::from_rdata(my_srv_name, 0, RData::TXT(rdata));
+            msg.add_answer(record);
         }
         Some(msg)
     } else {
