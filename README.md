@@ -62,5 +62,6 @@ The facilities described in [RFC6762](https://datatracker.ietf.org/doc/html/rfc6
 - configurable service name NAME
 - queries sent for PTR records of the form `_NAME._udp.local.` (TCP analog)
 - responses give SRV records of the form `PEER_ID._NAME._udp.local.` -> `PEER_ID.local.` (and associated A/AAAA records)
+- responses may include a TXT record with the same name as the SRV record, containing a list of key-value attribute pairs as described in [RFC 6763](https://datatracker.ietf.org/doc/html/rfc6763#section-6)
 
 If multiple ports are associated to their respective IP addresses, there will be one SRV record per port pointing to a resource name of the form `PEER_ID-PORT._NAME._udp.local`.
