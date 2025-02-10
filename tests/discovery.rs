@@ -27,7 +27,7 @@ fn test() {
             host: String,
             peer: String,
             addrs: Vec<(IpAddr, u16)>,
-            txt: BTreeMap<String, String>,
+            txt: BTreeMap<String, Option<String>>,
         },
         Forget {
             host: String,
@@ -58,9 +58,10 @@ fn test() {
             .map(|iface| iface.addr.ip())
             .collect::<Vec<_>>();
 
-        let mut txt = BTreeMap::new();
-        txt.insert("name".to_string(), format!("peer={peer_id}"));
-        txt.insert("foo".to_string(), "bar".to_string());
+        let mut attributes = BTreeMap::new();
+        attributes.insert("name".to_string(), Some(format!("peer={peer_id}")));
+        attributes.insert("foo".to_string(), Some("bar".to_string()));
+        attributes.insert("bool".to_string(), None);
 
         let _guard = Discoverer::new("swarm".to_owned(), peer_id.clone())
             .with_protocol(protocol)
@@ -79,7 +80,7 @@ fn test() {
                         addrs: peer.addrs().to_owned(),
                         txt: peer
                             .txt()
-                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                            .map(|(k, v)| (k.to_string(), v.map(ToString::to_string)))
                             .collect(),
                     }
                 };
@@ -87,7 +88,8 @@ fn test() {
             })
             .with_cadence(tau)
             .with_response_rate(phi)
-            .with_txt(txt)
+            .with_txt_attributes(attributes.into_iter())
+            .unwrap()
             .spawn(rt.handle())
             .expect("discoverer spawn");
 
@@ -374,8 +376,9 @@ fn test() {
         assert!(addrs.iter().any(|a| *a == addr));
 
         let mut expected_txt = BTreeMap::new();
-        expected_txt.insert("foo".to_string(), "bar".to_string());
-        expected_txt.insert("name".to_string(), format!("peer={peer}"));
+        expected_txt.insert("foo".to_string(), Some("bar".to_string()));
+        expected_txt.insert("name".to_string(), Some(format!("peer={peer}")));
+        expected_txt.insert("bool".to_string(), None);
         assert_eq!(txt, expected_txt, "txt mismatch");
 
         tx1.send(()).expect("send");

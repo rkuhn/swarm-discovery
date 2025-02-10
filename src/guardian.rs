@@ -14,7 +14,7 @@ pub enum Input {
     RemovePort(u16),
     RemoveAddr(IpAddr),
     AddAddr(u16, Vec<IpAddr>),
-    AddTxt(String, String),
+    SetTxt(String, Option<String>),
     RemoveTxt(String),
 }
 

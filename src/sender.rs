@@ -207,7 +207,20 @@ fn make_response(discoverer: &Discoverer, service_name: &Name) -> Option<Message
             }
         }
         if !peer.txt.is_empty() {
-            let parts = peer.txt.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            let parts = peer
+                .txt
+                .iter()
+                .filter_map(|(k, v)| {
+                    if k.is_empty() {
+                        None
+                    } else {
+                        Some(match v {
+                            None => k.to_string(),
+                            Some(v) => format!("{k}={v}"),
+                        })
+                    }
+                })
+                .collect();
             let rdata = TXT::new(parts);
             let record = Record::from_rdata(my_srv_name, 0, RData::TXT(rdata));
             msg.add_answer(record);
@@ -253,7 +266,7 @@ fn update_response(
             }
             make_response(discoverer, service_name)
         }
-        guardian::Input::AddTxt(key, value) => {
+        guardian::Input::SetTxt(key, value) => {
             let peer = discoverer
                 .peers
                 .entry(discoverer.peer_id.clone())

@@ -99,14 +99,19 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
                     let Ok(s) = std::str::from_utf8(&s) else {
                         continue;
                     };
-                    let mut parts = s.split('=');
-                    let (Some(key), Some(value)) = (parts.next(), parts.next()) else {
+                    if s.is_empty() {
                         continue;
+                    }
+                    let (key, value) = match s.split_once('=') {
+                        Some((key, value)) => (key, Some(value)),
+                        None => (s, None),
                     };
+                    let key = key.to_string();
+                    let value = value.map(ToString::to_string);
                     peer_txt
                         .entry(peer_id.to_string())
                         .or_default()
-                        .insert(key.to_string(), value.to_string());
+                        .insert(key, value);
                 }
             }
             _ => {

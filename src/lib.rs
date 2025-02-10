@@ -21,7 +21,7 @@ use tokio::runtime::Handle;
 
 type Callback = Box<dyn FnMut(&str, &Peer) + Send + 'static>;
 
-pub(crate) type TxtData = BTreeMap<String, String>;
+pub(crate) type TxtData = BTreeMap<String, Option<String>>;
 
 /// Builder for a swarm discovery service.
 ///
@@ -96,9 +96,22 @@ impl Peer {
         self.last_seen.elapsed()
     }
 
-    /// Returns the TXT records of the peer.
-    pub fn txt(&self) -> &TxtData {
-        &self.txt
+    /// Returns the TXT attribute data of the peer.
+    ///
+    /// This crate supports a single TXT record per peer, which contains a list
+    /// of key-value pairs of UTF-8 strings. If the value is empty, then it is a
+    /// boolean attribute, simply identified as being present, with no value.
+    ///
+    /// The formatting of the TXT record follows [RFC 6763]. Other than the RFC,
+    /// keys and values may be UTF-8 strings in addition to US-ASCII strings.
+    ///
+    /// Returns an iterator of the key-value pairs set by this peer.
+    ///
+    /// [RFC 6763]: https://datatracker.ietf.org/doc/html/rfc6763#section-6
+    pub fn txt(&self) -> impl Iterator<Item = (&str, Option<&str>)> + '_ {
+        self.txt
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_ref().map(|v| v.as_str())))
     }
 }
 
@@ -213,11 +226,33 @@ impl Discoverer {
         self
     }
 
-    /// Sets TXT records for this peer.
-    pub fn with_txt(mut self, txt: TxtData) -> Self {
+    /// Sets TXT attributes for this peer.
+    ///
+    /// This crate supports a single TXT record per peer, which contains a list
+    /// of key-value pairs of UTF-8 strings. If the value is empty, then it is a
+    /// boolean attribute, simply identified as being present, with no value.
+    ///
+    /// The formatting of the TXT record follows [RFC 6763]. Other than the RFC,
+    /// keys and values may be UTF-8 strings in addition to US-ASCII strings.
+    ///
+    /// Key and value of each pair may not be longer than 254 bytes. Returns an
+    /// error if the length is exceeded.
+    ///
+    /// The total length of all attributes is not checked here. You should make sure
+    /// to keep the total length of all attributes at a few hundred bytes so that
+    /// the resulting DNS packet does not exceed the UDP MTU.
+    ///
+    /// [RFC 6763]: https://datatracker.ietf.org/doc/html/rfc6763#section-6
+    pub fn with_txt_attributes(
+        mut self,
+        attributes: impl IntoIterator<Item = (String, Option<String>)>,
+    ) -> anyhow::Result<Self> {
         let me = self.peers.entry(self.peer_id.clone()).or_default();
-        me.txt.extend(txt.into_iter());
-        self
+        for (key, value) in attributes.into_iter() {
+            validate_txt_attribute_len(&key, value.as_deref())?;
+            me.txt.insert(key, value);
+        }
+        Ok(self)
     }
 
     /// Register a callback to be called when a peer is discovered or its addresses change.
@@ -331,13 +366,29 @@ impl DropGuard {
         self.aref.send(guardian::Input::AddAddr(port, addrs));
     }
 
-    /// Sets a TXT record.
-    pub fn add_txt(&self, key: String, value: String) {
-        self.aref.send(guardian::Input::AddTxt(key, value));
+    /// Sets a TXT attribute for this peer.
+    ///
+    /// This crate supports a single TXT record per peer, which contains a list
+    /// of key-value pairs of UTF-8 strings. If the value is empty, then it is a
+    /// boolean attribute, simply identified as being present, with no value.
+    ///
+    /// The formatting of the TXT record follows [RFC 6763]. Other than the RFC,
+    /// keys and values may be UTF-8 strings in addition to US-ASCII strings.
+    ///
+    /// Key and value together may not be longer than 254 bytes. Returns an
+    /// error if the length is exceeded.
+    ///
+    /// The total length of all attributes is not checked here. You should make sure
+    /// to keep the total length of all attributes at a few hundred bytes so that
+    /// the resulting DNS packet does not exceed the UDP MTU.
+    pub fn set_txt_attribute(&self, key: String, value: Option<String>) -> anyhow::Result<()> {
+        validate_txt_attribute_len(&key, value.as_deref())?;
+        self.aref.send(guardian::Input::SetTxt(key, value));
+        Ok(())
     }
 
-    /// Removes a TXT record.
-    pub fn remove_txt(&self, key: String) {
+    /// Removes a TXT attribute.
+    pub fn remove_txt_attribute(&self, key: String) {
         self.aref.send(guardian::Input::RemoveTxt(key));
     }
 }
@@ -345,6 +396,16 @@ impl DropGuard {
 impl Drop for DropGuard {
     fn drop(&mut self) {
         self.task.take().unwrap().abort();
+    }
+}
+
+fn validate_txt_attribute_len(key: &str, value: Option<&str>) -> anyhow::Result<()> {
+    if key.len() + value.as_ref().map(|v| v.len()).unwrap_or_default() > 254 {
+        Err(anyhow::anyhow!(
+            "Key-value pair is too long, must be shorter than 254 bytes"
+        ))
+    } else {
+        Ok(())
     }
 }
 
