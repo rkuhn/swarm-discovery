@@ -7,7 +7,7 @@ mod socket;
 mod updater;
 
 use acto::{AcTokio, ActoHandle, ActoRef, ActoRuntime, SupervisionRef, TokioJoinHandle};
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use hickory_proto::rr::Name;
 use socket::Sockets;
 use std::{
@@ -249,7 +249,7 @@ impl Discoverer {
     ) -> anyhow::Result<Self> {
         let me = self.peers.entry(self.peer_id.clone()).or_default();
         for (key, value) in attributes.into_iter() {
-            validate_txt_attribute_len(&key, value.as_deref())?;
+            validate_txt_attribute(&key, value.as_deref())?;
             me.txt.insert(key, value);
         }
         Ok(self)
@@ -382,7 +382,7 @@ impl DropGuard {
     /// to keep the total length of all attributes at a few hundred bytes so that
     /// the resulting DNS packet does not exceed the UDP MTU.
     pub fn set_txt_attribute(&self, key: String, value: Option<String>) -> anyhow::Result<()> {
-        validate_txt_attribute_len(&key, value.as_deref())?;
+        validate_txt_attribute(&key, value.as_deref())?;
         self.aref.send(guardian::Input::SetTxt(key, value));
         Ok(())
     }
@@ -399,9 +399,11 @@ impl Drop for DropGuard {
     }
 }
 
-fn validate_txt_attribute_len(key: &str, value: Option<&str>) -> anyhow::Result<()> {
-    if key.len() + value.as_ref().map(|v| v.len()).unwrap_or_default() > 254 {
-        Err(anyhow::anyhow!(
+fn validate_txt_attribute(key: &str, value: Option<&str>) -> anyhow::Result<()> {
+    if key.is_empty() {
+        Err(anyhow!("Key may not be empty"))
+    } else if key.len() + value.as_ref().map(|v| v.len()).unwrap_or_default() > 254 {
+        Err(anyhow!(
             "Key-value pair is too long, must be shorter than 254 bytes"
         ))
     } else {
