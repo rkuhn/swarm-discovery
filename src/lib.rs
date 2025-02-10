@@ -108,10 +108,21 @@ impl Peer {
     /// Returns an iterator of the key-value pairs set by this peer.
     ///
     /// [RFC 6763]: https://datatracker.ietf.org/doc/html/rfc6763#section-6
-    pub fn txt(&self) -> impl Iterator<Item = (&str, Option<&str>)> + '_ {
+    pub fn txt_attributes(&self) -> impl Iterator<Item = (&str, Option<&str>)> + '_ {
         self.txt
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_ref().map(|v| v.as_str())))
+    }
+
+    /// Returns the value for a TXT attribute for this peer.
+    ///
+    /// See [`Self::txt_attributes`] for details.
+    ///
+    /// Returns `None` if the attribute is missing.
+    /// Returns `Some(None)` if the attribute is a boolean, i.e. has no value.
+    /// Returns `Some(Some(value))` if the attribute has a value.
+    pub fn txt_attribute(&self, name: &str) -> Option<Option<&str>> {
+        self.txt.get(name).map(|x| x.as_deref())
     }
 }
 
