@@ -79,7 +79,7 @@ fn test() {
                         peer: pid.to_owned(),
                         addrs: peer.addrs().to_owned(),
                         txt: peer
-                            .txt()
+                            .txt_attributes()
                             .map(|(k, v)| (k.to_string(), v.map(ToString::to_string)))
                             .collect(),
                     }
