@@ -60,7 +60,7 @@ fn test() {
 
         let mut attributes = BTreeMap::new();
         attributes.insert("name".to_string(), Some(format!("peer={peer_id}")));
-        attributes.insert("foo".to_string(), Some("bar".to_string()));
+        attributes.insert("føø".to_string(), Some("bär".to_string()));
         attributes.insert("bool".to_string(), None);
 
         let _guard = Discoverer::new("swarm".to_owned(), peer_id.clone())
@@ -376,7 +376,7 @@ fn test() {
         assert!(addrs.iter().any(|a| *a == addr));
 
         let mut expected_txt = BTreeMap::new();
-        expected_txt.insert("foo".to_string(), Some("bar".to_string()));
+        expected_txt.insert("føø".to_string(), Some("bär".to_string()));
         expected_txt.insert("name".to_string(), Some(format!("peer={peer}")));
         expected_txt.insert("bool".to_string(), None);
         assert_eq!(txt, expected_txt, "txt mismatch");

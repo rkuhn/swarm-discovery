@@ -258,7 +258,7 @@ fn update_response(
             let peer = discoverer
                 .peers
                 .entry(discoverer.peer_id.clone())
-                .or_default();
+                .or_insert_with(Peer::new);
             for addr in addrs {
                 peer.addrs.push((addr, port));
                 peer.addrs.sort_unstable();
@@ -270,7 +270,7 @@ fn update_response(
             let peer = discoverer
                 .peers
                 .entry(discoverer.peer_id.clone())
-                .or_default();
+                .or_insert_with(Peer::new);
             peer.txt.insert(key, value);
             make_response(discoverer, service_name)
         }

@@ -106,12 +106,10 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
                         Some((key, value)) => (key, Some(value)),
                         None => (s, None),
                     };
-                    let key = key.to_string();
-                    let value = value.map(ToString::to_string);
-                    peer_txt
-                        .entry(peer_id.to_string())
-                        .or_default()
-                        .insert(key, value);
+                    let map = peer_txt.entry(peer_id.to_string()).or_default();
+                    if !map.contains_key(key) {
+                        map.insert(key.to_string(), value.map(ToString::to_string));
+                    }
                 }
             }
             _ => {

@@ -77,6 +77,17 @@ pub struct Peer {
 }
 
 impl Peer {
+    /// Creates a new [`Peer`] with no addresses or TXT attributes.
+    ///
+    /// The last seen timestamp is set to the current time.
+    pub(crate) fn new() -> Self {
+        Peer {
+            addrs: Default::default(),
+            last_seen: Instant::now(),
+            txt: Default::default(),
+        }
+    }
+
     /// Known addresses of this peer, or empty slice in case the peer has expired.
     pub fn addrs(&self) -> &[(IpAddr, u16)] {
         &self.addrs
@@ -96,18 +107,10 @@ impl Peer {
         self.last_seen.elapsed()
     }
 
-    /// Returns the TXT attribute data of the peer.
+    /// Returns an iterator of the TXT attributes set by the peer.
     ///
-    /// This crate supports a single TXT record per peer, which contains a list
-    /// of key-value pairs of UTF-8 strings. If the value is empty, then it is a
-    /// boolean attribute, simply identified as being present, with no value.
-    ///
-    /// The formatting of the TXT record follows [RFC 6763]. Other than the RFC,
-    /// keys and values may be UTF-8 strings in addition to US-ASCII strings.
-    ///
-    /// Returns an iterator of the key-value pairs set by this peer.
-    ///
-    /// [RFC 6763]: https://datatracker.ietf.org/doc/html/rfc6763#section-6
+    /// See [`Discoverer::with_txt_attributes] for details on the encoding of
+    /// these attributes.
     pub fn txt_attributes(&self) -> impl Iterator<Item = (&str, Option<&str>)> + '_ {
         self.txt
             .iter()
@@ -116,23 +119,14 @@ impl Peer {
 
     /// Returns the value for a TXT attribute for this peer.
     ///
-    /// See [`Self::txt_attributes`] for details.
-    ///
     /// Returns `None` if the attribute is missing.
     /// Returns `Some(None)` if the attribute is a boolean, i.e. has no value.
     /// Returns `Some(Some(value))` if the attribute has a value.
+    ///
+    /// See [`Discoverer::with_txt_attributes] for details on the encoding of
+    /// these attributes.
     pub fn txt_attribute(&self, name: &str) -> Option<Option<&str>> {
         self.txt.get(name).map(|x| x.as_deref())
-    }
-}
-
-impl Default for Peer {
-    fn default() -> Self {
-        Peer {
-            addrs: Default::default(),
-            last_seen: Instant::now(),
-            txt: Default::default(),
-        }
     }
 }
 
@@ -230,7 +224,10 @@ impl Discoverer {
     /// If this method is not called, the local peer will not advertise itself.
     /// It can still discover others.
     pub fn with_addrs(mut self, port: u16, addrs: impl IntoIterator<Item = IpAddr>) -> Self {
-        let me = self.peers.entry(self.peer_id.clone()).or_default();
+        let me = self
+            .peers
+            .entry(self.peer_id.clone())
+            .or_insert_with(Peer::new);
         me.addrs.extend(addrs.into_iter().map(|addr| (addr, port)));
         me.addrs.sort_unstable();
         me.addrs.dedup();
@@ -240,14 +237,16 @@ impl Discoverer {
     /// Sets TXT attributes for this peer.
     ///
     /// This crate supports a single TXT record per peer, which contains a list
-    /// of key-value pairs of UTF-8 strings. If the value is empty, then it is a
-    /// boolean attribute, simply identified as being present, with no value.
+    /// of key-value pairs of UTF-8 strings. The value is optional: when missing,
+    /// the attribute is a flag, simply identified as being present.
     ///
-    /// The formatting of the TXT record follows [RFC 6763]. Other than the RFC,
-    /// keys and values may be UTF-8 strings in addition to US-ASCII strings.
+    /// The formatting of the TXT record follows [RFC 6763], with the following
+    /// differences to the RFC:
+    ///  * Keys and values are interpreted as UTF-8 strings (not only US-ASCII)
+    ///  * Keys and values are case-sensitive (not case-insensitive)
     ///
-    /// Key and value of each pair may not be longer than 254 bytes. Returns an
-    /// error if the length is exceeded.
+    /// Key and value of each pair may not be longer than 254 bytes combined.
+    /// Returns an error if the length is exceeded.
     ///
     /// The total length of all attributes is not checked here. You should make sure
     /// to keep the total length of all attributes at a few hundred bytes so that
@@ -258,7 +257,10 @@ impl Discoverer {
         mut self,
         attributes: impl IntoIterator<Item = (String, Option<String>)>,
     ) -> anyhow::Result<Self> {
-        let me = self.peers.entry(self.peer_id.clone()).or_default();
+        let me = self
+            .peers
+            .entry(self.peer_id.clone())
+            .or_insert_with(Peer::new);
         for (key, value) in attributes.into_iter() {
             validate_txt_attribute(&key, value.as_deref())?;
             me.txt.insert(key, value);
@@ -379,12 +381,8 @@ impl DropGuard {
 
     /// Sets a TXT attribute for this peer.
     ///
-    /// This crate supports a single TXT record per peer, which contains a list
-    /// of key-value pairs of UTF-8 strings. If the value is empty, then it is a
-    /// boolean attribute, simply identified as being present, with no value.
-    ///
-    /// The formatting of the TXT record follows [RFC 6763]. Other than the RFC,
-    /// keys and values may be UTF-8 strings in addition to US-ASCII strings.
+    /// See [`Discoverer::with_txt_attributes] for details on the encoding of
+    /// these attributes.
     ///
     /// Key and value together may not be longer than 254 bytes. Returns an
     /// error if the length is exceeded.
