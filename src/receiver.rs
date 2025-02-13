@@ -1,13 +1,11 @@
-use crate::{sender::MdnsMsg, Peer};
+use crate::{sender::MdnsMsg, Peer, TxtData};
 use acto::{ActoCell, ActoRef, ActoRuntime};
 use anyhow::Context;
 use hickory_proto::{
     op::Message,
     rr::{DNSClass, Name, RData, RecordType},
 };
-use std::{
-    borrow::Cow, collections::BTreeMap, net::IpAddr, str::FromStr, sync::Arc, time::Instant,
-};
+use std::{collections::BTreeMap, net::IpAddr, str::FromStr, sync::Arc, time::Instant};
 use tokio::net::UdpSocket;
 
 pub async fn receiver(
@@ -64,6 +62,7 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
     let local = Name::from_str("local.").unwrap();
 
     let mut peer_ports: BTreeMap<Name, Vec<(u16, String)>> = BTreeMap::new();
+    let mut peer_txt: BTreeMap<String, TxtData> = BTreeMap::new();
     for response in packet.answers() {
         if response.dns_class() != DNSClass::IN {
             tracing::trace!(
@@ -81,24 +80,45 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
         let Some(peer_id_bytes) = name.iter().next() else {
             continue;
         };
-        let Cow::Borrowed(peer_id) = String::from_utf8_lossy(peer_id_bytes) else {
+        let Ok(peer_id) = std::str::from_utf8(peer_id_bytes) else {
             tracing::debug!(
                 "received mDNS response with invalid peer ID {:?}",
                 peer_id_bytes
             );
             continue;
         };
-        let RData::SRV(srv) = response.data() else {
-            tracing::trace!(
-                "received mDNS response with wrong data {:?}",
-                response.data()
-            );
-            continue;
-        };
-        peer_ports
-            .entry(srv.target().clone())
-            .or_default()
-            .push((srv.port(), peer_id.to_owned()));
+        match response.data() {
+            RData::SRV(srv) => {
+                peer_ports
+                    .entry(srv.target().clone())
+                    .or_default()
+                    .push((srv.port(), peer_id.to_string()));
+            }
+            RData::TXT(txt) => {
+                for s in txt.iter() {
+                    let Ok(s) = std::str::from_utf8(&s) else {
+                        continue;
+                    };
+                    if s.is_empty() {
+                        continue;
+                    }
+                    let (key, value) = match s.split_once('=') {
+                        Some((key, value)) => (key, Some(value)),
+                        None => (s, None),
+                    };
+                    let map = peer_txt.entry(peer_id.to_string()).or_default();
+                    if !map.contains_key(key) {
+                        map.insert(key.to_string(), value.map(ToString::to_string));
+                    }
+                }
+            }
+            _ => {
+                tracing::trace!(
+                    "received mDNS response with wrong data {:?}",
+                    response.data()
+                );
+            }
+        }
     }
 
     let mut peer_addrs: BTreeMap<String, Vec<(IpAddr, u16)>> = BTreeMap::new();
@@ -138,8 +158,13 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
     for (peer_id, mut addrs) in peer_addrs {
         addrs.sort_unstable();
         addrs.dedup();
+        let txt = peer_txt.remove(&peer_id).unwrap_or_default();
         let last_seen = Instant::now();
-        let peer = Peer { addrs, last_seen };
+        let peer = Peer {
+            addrs,
+            last_seen,
+            txt,
+        };
         ret.insert(peer_id, peer);
     }
     Some(MdnsMsg::Response(ret))

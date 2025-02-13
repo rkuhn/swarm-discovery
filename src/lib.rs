@@ -7,7 +7,7 @@ mod socket;
 mod updater;
 
 use acto::{AcTokio, ActoHandle, ActoRef, ActoRuntime, SupervisionRef, TokioJoinHandle};
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use hickory_proto::rr::Name;
 use socket::Sockets;
 use std::{
@@ -20,6 +20,8 @@ use std::{
 use tokio::runtime::Handle;
 
 type Callback = Box<dyn FnMut(&str, &Peer) + Send + 'static>;
+
+pub(crate) type TxtData = BTreeMap<String, Option<String>>;
 
 /// Builder for a swarm discovery service.
 ///
@@ -71,9 +73,21 @@ pub struct Discoverer {
 pub struct Peer {
     addrs: Vec<(IpAddr, u16)>,
     last_seen: Instant,
+    txt: TxtData,
 }
 
 impl Peer {
+    /// Creates a new [`Peer`] with no addresses or TXT attributes.
+    ///
+    /// The last seen timestamp is set to the current time.
+    pub(crate) fn new() -> Self {
+        Peer {
+            addrs: Default::default(),
+            last_seen: Instant::now(),
+            txt: Default::default(),
+        }
+    }
+
     /// Known addresses of this peer, or empty slice in case the peer has expired.
     pub fn addrs(&self) -> &[(IpAddr, u16)] {
         &self.addrs
@@ -91,6 +105,28 @@ impl Peer {
     /// snapshot.
     pub fn age(&self) -> Duration {
         self.last_seen.elapsed()
+    }
+
+    /// Returns an iterator of the TXT attributes set by the peer.
+    ///
+    /// See [`Discoverer::with_txt_attributes] for details on the encoding of
+    /// these attributes.
+    pub fn txt_attributes(&self) -> impl Iterator<Item = (&str, Option<&str>)> + '_ {
+        self.txt
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_ref().map(|v| v.as_str())))
+    }
+
+    /// Returns the value for a TXT attribute for this peer.
+    ///
+    /// Returns `None` if the attribute is missing.
+    /// Returns `Some(None)` if the attribute is a boolean, i.e. has no value.
+    /// Returns `Some(Some(value))` if the attribute has a value.
+    ///
+    /// See [`Discoverer::with_txt_attributes] for details on the encoding of
+    /// these attributes.
+    pub fn txt_attribute(&self, name: &str) -> Option<Option<&str>> {
+        self.txt.get(name).map(|x| x.as_deref())
     }
 }
 
@@ -191,14 +227,45 @@ impl Discoverer {
         let me = self
             .peers
             .entry(self.peer_id.clone())
-            .or_insert_with(|| Peer {
-                addrs: Vec::new(),
-                last_seen: Instant::now(),
-            });
+            .or_insert_with(Peer::new);
         me.addrs.extend(addrs.into_iter().map(|addr| (addr, port)));
         me.addrs.sort_unstable();
         me.addrs.dedup();
         self
+    }
+
+    /// Sets TXT attributes for this peer.
+    ///
+    /// This crate supports a single TXT record per peer, which contains a list
+    /// of key-value pairs of UTF-8 strings. The value is optional: when missing,
+    /// the attribute is a flag, simply identified as being present.
+    ///
+    /// The formatting of the TXT record follows [RFC 6763], with the following
+    /// differences to the RFC:
+    ///  * Keys and values are interpreted as UTF-8 strings (not only US-ASCII)
+    ///  * Keys and values are case-sensitive (not case-insensitive)
+    ///
+    /// Key and value of each pair may not be longer than 254 bytes combined.
+    /// Returns an error if the length is exceeded.
+    ///
+    /// The total length of all attributes is not checked here. You should make sure
+    /// to keep the total length of all attributes at a few hundred bytes so that
+    /// the resulting DNS packet does not exceed the UDP MTU.
+    ///
+    /// [RFC 6763]: https://datatracker.ietf.org/doc/html/rfc6763#section-6
+    pub fn with_txt_attributes(
+        mut self,
+        attributes: impl IntoIterator<Item = (String, Option<String>)>,
+    ) -> anyhow::Result<Self> {
+        let me = self
+            .peers
+            .entry(self.peer_id.clone())
+            .or_insert_with(Peer::new);
+        for (key, value) in attributes.into_iter() {
+            validate_txt_attribute(&key, value.as_deref())?;
+            me.txt.insert(key, value);
+        }
+        Ok(self)
     }
 
     /// Register a callback to be called when a peer is discovered or its addresses change.
@@ -309,13 +376,47 @@ impl DropGuard {
 
     /// Add a port and addresses to the local addresses.
     pub fn add(&self, port: u16, addrs: Vec<IpAddr>) {
-        self.aref.send(guardian::Input::Add(port, addrs));
+        self.aref.send(guardian::Input::AddAddr(port, addrs));
+    }
+
+    /// Sets a TXT attribute for this peer.
+    ///
+    /// See [`Discoverer::with_txt_attributes] for details on the encoding of
+    /// these attributes.
+    ///
+    /// Key and value together may not be longer than 254 bytes. Returns an
+    /// error if the length is exceeded.
+    ///
+    /// The total length of all attributes is not checked here. You should make sure
+    /// to keep the total length of all attributes at a few hundred bytes so that
+    /// the resulting DNS packet does not exceed the UDP MTU.
+    pub fn set_txt_attribute(&self, key: String, value: Option<String>) -> anyhow::Result<()> {
+        validate_txt_attribute(&key, value.as_deref())?;
+        self.aref.send(guardian::Input::SetTxt(key, value));
+        Ok(())
+    }
+
+    /// Removes a TXT attribute.
+    pub fn remove_txt_attribute(&self, key: String) {
+        self.aref.send(guardian::Input::RemoveTxt(key));
     }
 }
 
 impl Drop for DropGuard {
     fn drop(&mut self) {
         self.task.take().unwrap().abort();
+    }
+}
+
+fn validate_txt_attribute(key: &str, value: Option<&str>) -> anyhow::Result<()> {
+    if key.is_empty() {
+        Err(anyhow!("Key may not be empty"))
+    } else if key.len() + value.as_ref().map(|v| v.len()).unwrap_or_default() > 254 {
+        Err(anyhow!(
+            "Key-value pair is too long, must be shorter than 254 bytes"
+        ))
+    } else {
+        Ok(())
     }
 }
 

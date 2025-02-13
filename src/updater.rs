@@ -67,6 +67,7 @@ pub async fn updater(
                             &Peer {
                                 last_seen: peer.last_seen,
                                 addrs: vec![],
+                                txt: Default::default(),
                             },
                         );
                     }

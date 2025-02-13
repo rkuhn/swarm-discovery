@@ -6,15 +6,13 @@ use crate::{
 use acto::{AcTokioRuntime, ActoCell, ActoInput, ActoRef};
 use hickory_proto::{
     op::{Message, MessageType, Query},
-    rr::{rdata, DNSClass, Name, RData, Record, RecordType},
+    rr::{
+        rdata::{self, TXT},
+        DNSClass, Name, RData, Record, RecordType,
+    },
 };
 use rand::{thread_rng, Rng};
-use std::{
-    collections::BTreeMap,
-    net::IpAddr,
-    str::FromStr,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, net::IpAddr, str::FromStr, time::Duration};
 
 const RESPONSE_DELAY: Duration = Duration::from_millis(100);
 
@@ -208,6 +206,25 @@ fn make_response(discoverer: &Discoverer, service_name: &Name) -> Option<Message
                 }
             }
         }
+        if !peer.txt.is_empty() {
+            let parts = peer
+                .txt
+                .iter()
+                .filter_map(|(k, v)| {
+                    if k.is_empty() {
+                        None
+                    } else {
+                        Some(match v {
+                            None => k.to_string(),
+                            Some(v) => format!("{k}={v}"),
+                        })
+                    }
+                })
+                .collect();
+            let rdata = TXT::new(parts);
+            let record = Record::from_rdata(my_srv_name, 0, RData::TXT(rdata));
+            msg.add_answer(record);
+        }
         Some(msg)
     } else {
         tracing::info!("no addresses for peer, not announcing");
@@ -237,20 +254,33 @@ fn update_response(
             }
             make_response(discoverer, service_name)
         }
-        guardian::Input::Add(port, addrs) => {
+        guardian::Input::AddAddr(port, addrs) => {
             let peer = discoverer
                 .peers
                 .entry(discoverer.peer_id.clone())
-                .or_insert_with(|| Peer {
-                    addrs: Vec::new(),
-                    last_seen: Instant::now(),
-                });
+                .or_insert_with(Peer::new);
             for addr in addrs {
                 peer.addrs.push((addr, port));
                 peer.addrs.sort_unstable();
                 peer.addrs.dedup();
             }
             make_response(discoverer, service_name)
+        }
+        guardian::Input::SetTxt(key, value) => {
+            let peer = discoverer
+                .peers
+                .entry(discoverer.peer_id.clone())
+                .or_insert_with(Peer::new);
+            peer.txt.insert(key, value);
+            make_response(discoverer, service_name)
+        }
+        guardian::Input::RemoveTxt(key) => {
+            if let Some(peer) = discoverer.peers.get_mut(&discoverer.peer_id) {
+                let _ = peer.txt.remove(&key);
+                make_response(discoverer, service_name)
+            } else {
+                None
+            }
         }
     }
 }

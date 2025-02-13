@@ -13,7 +13,9 @@ pub enum Input {
     RemoveAll,
     RemovePort(u16),
     RemoveAddr(IpAddr),
-    Add(u16, Vec<IpAddr>),
+    AddAddr(u16, Vec<IpAddr>),
+    SetTxt(String, Option<String>),
+    RemoveTxt(String),
 }
 
 pub async fn guardian(

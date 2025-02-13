@@ -27,6 +27,7 @@ fn test() {
             host: String,
             peer: String,
             addrs: Vec<(IpAddr, u16)>,
+            txt: BTreeMap<String, Option<String>>,
         },
         Forget {
             host: String,
@@ -57,6 +58,11 @@ fn test() {
             .map(|iface| iface.addr.ip())
             .collect::<Vec<_>>();
 
+        let mut attributes = BTreeMap::new();
+        attributes.insert("name".to_string(), Some(format!("peer={peer_id}")));
+        attributes.insert("føø".to_string(), Some("bär".to_string()));
+        attributes.insert("bool".to_string(), None);
+
         let _guard = Discoverer::new("swarm".to_owned(), peer_id.clone())
             .with_protocol(protocol)
             .with_addrs(port + 10, addrs.iter().take(1).copied())
@@ -72,12 +78,18 @@ fn test() {
                         host: peer_id.clone(),
                         peer: pid.to_owned(),
                         addrs: peer.addrs().to_owned(),
+                        txt: peer
+                            .txt_attributes()
+                            .map(|(k, v)| (k.to_string(), v.map(ToString::to_string)))
+                            .collect(),
                     }
                 };
                 snd.send(msg).expect("send");
             })
             .with_cadence(tau)
             .with_response_rate(phi)
+            .with_txt_attributes(attributes.into_iter())
+            .unwrap()
             .spawn(rt.handle())
             .expect("discoverer spawn");
 
@@ -337,8 +349,12 @@ fn test() {
             tx_f.clone(),
         ));
 
-        let Disco::Discover { host, peer, addrs } =
-            rx_f.try_recv_timeout(Duration::from_secs(5)).expect("recv")
+        let Disco::Discover {
+            host,
+            peer,
+            addrs,
+            txt,
+        } = rx_f.try_recv_timeout(Duration::from_secs(5)).expect("recv")
         else {
             panic!("no discovery");
         };
@@ -358,6 +374,12 @@ fn test() {
         let addrs = addr_map.get(port1).expect("port1");
         assert!(addrs.len() > 1);
         assert!(addrs.iter().any(|a| *a == addr));
+
+        let mut expected_txt = BTreeMap::new();
+        expected_txt.insert("føø".to_string(), Some("bär".to_string()));
+        expected_txt.insert("name".to_string(), Some(format!("peer={peer}")));
+        expected_txt.insert("bool".to_string(), None);
+        assert_eq!(txt, expected_txt, "txt mismatch");
 
         tx1.send(()).expect("send");
         tx2.send(()).expect("send");
