@@ -109,7 +109,7 @@ impl Peer {
 
     /// Returns an iterator of the TXT attributes set by the peer.
     ///
-    /// See [`Discoverer::with_txt_attributes] for details on the encoding of
+    /// See [`Discoverer::with_txt_attributes`] for details on the encoding of
     /// these attributes.
     pub fn txt_attributes(&self) -> impl Iterator<Item = (&str, Option<&str>)> + '_ {
         self.txt
@@ -123,7 +123,7 @@ impl Peer {
     /// Returns `Some(None)` if the attribute is a boolean, i.e. has no value.
     /// Returns `Some(Some(value))` if the attribute has a value.
     ///
-    /// See [`Discoverer::with_txt_attributes] for details on the encoding of
+    /// See [`Discoverer::with_txt_attributes`] for details on the encoding of
     /// these attributes.
     pub fn txt_attribute(&self, name: &str) -> Option<Option<&str>> {
         self.txt.get(name).map(|x| x.as_deref())
@@ -381,7 +381,7 @@ impl DropGuard {
 
     /// Sets a TXT attribute for this peer.
     ///
-    /// See [`Discoverer::with_txt_attributes] for details on the encoding of
+    /// See [`Discoverer::with_txt_attributes`] for details on the encoding of
     /// these attributes.
     ///
     /// Key and value together may not be longer than 254 bytes. Returns an
