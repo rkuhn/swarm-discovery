@@ -1,6 +1,6 @@
 [package]
 name = "swarm-discovery"
-version = "0.3.0-alpha.2"
+version = "0.3.1"
 edition = "2021"
 authors = ["Roland Kuhn"]
 description = "Discovery service for IP-based swarms"
