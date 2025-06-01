@@ -1,22 +1,29 @@
 use crate::{sender::MdnsMsg, Peer, TxtData};
 use acto::{ActoCell, ActoRef, ActoRuntime};
-use anyhow::Context;
 use hickory_proto::{
     op::Message,
     rr::{DNSClass, Name, RData, RecordType},
 };
+use snafu::prelude::*;
 use std::{collections::BTreeMap, net::IpAddr, str::FromStr, sync::Arc, time::Instant};
 use tokio::net::UdpSocket;
+
+/// Errors that can occur when receiving on the socket.
+#[derive(Debug, Snafu)]
+#[snafu(display("Could not receive from the socket"))]
+pub struct ReceiverError {
+    source: std::io::Error,
+}
 
 pub async fn receiver(
     _ctx: ActoCell<(), impl ActoRuntime>,
     service_name: Name,
     socket: Arc<UdpSocket>,
     target: ActoRef<MdnsMsg>,
-) -> anyhow::Result<()> {
+) -> Result<(), ReceiverError> {
     let mut buf = [0; 1472];
     loop {
-        let (len, addr) = socket.recv_from(&mut buf).await.context("recv_from")?;
+        let (len, addr) = socket.recv_from(&mut buf).await.context(ReceiverSnafu)?;
         let msg = &buf[..len];
         tracing::trace!("received {} bytes from {}", len, addr);
         if let Some(msg) = handle_msg(msg, &service_name, addr.ip()) {

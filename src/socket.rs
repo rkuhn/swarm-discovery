@@ -1,6 +1,6 @@
 use crate::IpClass;
-use anyhow::{bail, Context};
 use hickory_proto::op::Message;
+use snafu::prelude::*;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
@@ -12,49 +12,101 @@ pub const MDNS_PORT: u16 = 5353;
 pub const MDNS_IPV4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 pub const MDNS_IPV6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 
-pub fn socket_v4() -> anyhow::Result<UdpSocket> {
-    let socket =
-        Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).context("Socket::new")?;
-    socket
-        .set_reuse_address(true)
-        .context("set_reuse_address")?;
-    #[cfg(unix)]
-    socket.set_reuse_port(true).context("set_reuse_port")?;
-    socket
-        .bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT).into())
-        .context("bind")?;
-    socket
-        .set_multicast_loop_v4(true)
-        .context("set_multicast_loop_v4")?;
-    socket
-        .join_multicast_v4(&MDNS_IPV4, &Ipv4Addr::UNSPECIFIED)
-        .context("join_multicast_v4")?;
-    socket
-        .set_multicast_ttl_v4(16)
-        .context("set_multicast_ttl_v4")?;
-    socket.set_nonblocking(true).context("set_nonblocking")?;
-    UdpSocket::from_std(std::net::UdpSocket::from(socket)).context("from_std")
+#[derive(Debug)]
+#[doc(hidden)]
+pub enum IP {
+    Ipv4,
+    Ipv6,
 }
 
-pub fn socket_v6() -> anyhow::Result<UdpSocket> {
-    let socket =
-        Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).context("Socket::new")?;
+impl std::fmt::Display for IP {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IP::Ipv4 => write!(f, "IPv4"),
+            IP::Ipv6 => write!(f, "IPv6"),
+        }
+    }
+}
+
+/// Errors that can occur when creating and configuring an IPv4 or IPv6 socket.
+#[derive(Debug, Snafu)]
+pub enum SocketError {
+    #[snafu(display("{domain}: error creating new socket for"))]
+    NewSocket { domain: IP, source: std::io::Error },
+    #[snafu(display("{domain}: error setting the reuse address"))]
+    ReuseAddress { domain: IP, source: std::io::Error },
+    #[cfg(unix)]
+    #[snafu(display("{domain}: error setting the reuse port"))]
+    ReusePort { domain: IP, source: std::io::Error },
+    #[snafu(display("{domain}: error binding the socket for"))]
+    Bind { domain: IP, source: std::io::Error },
+    #[snafu(display("{domain}: error setting multicast loop"))]
+    SetMulticastLoop { domain: IP, source: std::io::Error },
+    #[snafu(display("{domain}: error joining multicast"))]
+    JoinMulticast { domain: IP, source: std::io::Error },
+    #[snafu(display("{domain}: error setting the multicast ttl"))]
+    MulticastTtl { domain: IP, source: std::io::Error },
+    #[snafu(display("{domain}: error setting the socket to non-blocking mode"))]
+    SetNonBlocking { domain: IP, source: std::io::Error },
+    #[snafu(display("{domain}: error creating a UDP socket from a standard socket"))]
+    UdpSocket { domain: IP, source: std::io::Error },
+    #[snafu(display("Cannot bind to IPv4 or IPv6"))]
+    CannotBind,
+}
+
+pub fn socket_v4() -> Result<UdpSocket, SocketError> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+        .context(NewSocketSnafu { domain: IP::Ipv4 })?;
     socket
         .set_reuse_address(true)
-        .context("set_reuse_address")?;
+        .context(ReuseAddressSnafu { domain: IP::Ipv4 })?;
     #[cfg(unix)]
-    socket.set_reuse_port(true).context("set_reuse_port")?;
+    socket
+        .set_reuse_port(true)
+        .context(ReusePortSnafu { domain: IP::Ipv4 })?;
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT).into())
+        .context(BindSnafu { domain: IP::Ipv4 })?;
+    socket
+        .set_multicast_loop_v4(true)
+        .context(SetMulticastLoopSnafu { domain: IP::Ipv4 })?;
+    socket
+        .join_multicast_v4(&MDNS_IPV4, &Ipv4Addr::UNSPECIFIED)
+        .context(JoinMulticastSnafu { domain: IP::Ipv4 })?;
+    socket
+        .set_multicast_ttl_v4(16)
+        .context(MulticastTtlSnafu { domain: IP::Ipv4 })?;
+    socket
+        .set_nonblocking(true)
+        .context(SetNonBlockingSnafu { domain: IP::Ipv4 })?;
+    UdpSocket::from_std(std::net::UdpSocket::from(socket))
+        .context(UdpSocketSnafu { domain: IP::Ipv4 })
+}
+
+pub fn socket_v6() -> Result<UdpSocket, SocketError> {
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))
+        .context(NewSocketSnafu { domain: IP::Ipv6 })?;
+    socket
+        .set_reuse_address(true)
+        .context(ReuseAddressSnafu { domain: IP::Ipv6 })?;
+    #[cfg(unix)]
+    socket
+        .set_reuse_port(true)
+        .context(ReusePortSnafu { domain: IP::Ipv6 })?;
     socket
         .bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, MDNS_PORT)).into())
-        .context("bind")?;
+        .context(BindSnafu { domain: IP::Ipv6 })?;
     socket
         .set_multicast_loop_v6(true)
-        .context("set_multicast_loop_v6")?;
+        .context(SetMulticastLoopSnafu { domain: IP::Ipv6 })?;
     socket
         .join_multicast_v6(&MDNS_IPV6, 0)
-        .context("join_multicast_v6")?;
-    socket.set_nonblocking(true).context("set_nonblocking")?;
-    UdpSocket::from_std(std::net::UdpSocket::from(socket)).context("from_std")
+        .context(JoinMulticastSnafu { domain: IP::Ipv6 })?;
+    socket
+        .set_nonblocking(true)
+        .context(SetNonBlockingSnafu { domain: IP::Ipv6 })?;
+    UdpSocket::from_std(std::net::UdpSocket::from(socket))
+        .context(UdpSocketSnafu { domain: IP::Ipv6 })
 }
 
 #[derive(Clone, Debug)]
@@ -64,7 +116,7 @@ pub struct Sockets {
 }
 
 impl Sockets {
-    pub fn new(class: IpClass) -> anyhow::Result<Self> {
+    pub fn new(class: IpClass) -> Result<Self, SocketError> {
         match class {
             IpClass::Auto => {
                 let socket = Self {
@@ -72,18 +124,18 @@ impl Sockets {
                     v6: socket_v6().ok().map(Arc::new),
                 };
                 if socket.v4.is_none() && socket.v6.is_none() {
-                    bail!("Socket cannot bind to ipv4 or ipv6");
+                    return Err(CannotBindSnafu.build());
                 }
                 Ok(socket)
             }
             _ => Ok(Self {
                 v4: class
                     .has_v4()
-                    .then(|| socket_v4().context("socket_v4").map(Arc::new))
+                    .then(|| socket_v4().map(Arc::new))
                     .transpose()?,
                 v6: class
                     .has_v6()
-                    .then(|| socket_v6().context("socket_v6").map(Arc::new))
+                    .then(|| socket_v6().map(Arc::new))
                     .transpose()?,
             }),
         }
