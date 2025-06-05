@@ -4,14 +4,15 @@ use hickory_proto::{
     op::Message,
     rr::{DNSClass, Name, RData, RecordType},
 };
-use snafu::prelude::*;
 use std::{collections::BTreeMap, net::IpAddr, str::FromStr, sync::Arc, time::Instant};
+use thiserror::Error;
 use tokio::net::UdpSocket;
 
 /// Errors that can occur when receiving on the socket.
-#[derive(Debug, Snafu)]
-#[snafu(display("Could not receive from the socket"))]
+#[derive(Debug, Error)]
+#[error("Could not receive from the socket")]
 pub struct ReceiverError {
+    #[from]
     source: std::io::Error,
 }
 
@@ -23,7 +24,10 @@ pub async fn receiver(
 ) -> Result<(), ReceiverError> {
     let mut buf = [0; 1472];
     loop {
-        let (len, addr) = socket.recv_from(&mut buf).await.context(ReceiverSnafu)?;
+        let (len, addr) = socket
+            .recv_from(&mut buf)
+            .await
+            .map_err(ReceiverError::from)?;
         let msg = &buf[..len];
         tracing::trace!("received {} bytes from {}", len, addr);
         if let Some(msg) = handle_msg(msg, &service_name, addr.ip()) {

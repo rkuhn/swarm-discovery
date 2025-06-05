@@ -1,11 +1,11 @@
 use crate::IpClass;
 use hickory_proto::op::Message;
-use snafu::prelude::*;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
 };
+use thiserror::Error;
 use tokio::net::UdpSocket;
 
 pub const MDNS_PORT: u16 = 5353;
@@ -29,84 +29,175 @@ impl std::fmt::Display for IP {
 }
 
 /// Errors that can occur when creating and configuring an IPv4 or IPv6 socket.
-#[derive(Debug, Snafu)]
+#[derive(Debug, Error)]
 pub enum SocketError {
-    #[snafu(display("{domain}: error creating new socket for"))]
-    NewSocket { domain: IP, source: std::io::Error },
-    #[snafu(display("{domain}: error setting the reuse address"))]
-    ReuseAddress { domain: IP, source: std::io::Error },
+    #[error("{domain}: error creating new socket for")]
+    NewSocket {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{domain}: error setting the reuse address")]
+    ReuseAddress {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
     #[cfg(unix)]
-    #[snafu(display("{domain}: error setting the reuse port"))]
-    ReusePort { domain: IP, source: std::io::Error },
-    #[snafu(display("{domain}: error binding the socket for"))]
-    Bind { domain: IP, source: std::io::Error },
-    #[snafu(display("{domain}: error setting multicast loop"))]
-    SetMulticastLoop { domain: IP, source: std::io::Error },
-    #[snafu(display("{domain}: error joining multicast"))]
-    JoinMulticast { domain: IP, source: std::io::Error },
-    #[snafu(display("{domain}: error setting the multicast ttl"))]
-    MulticastTtl { domain: IP, source: std::io::Error },
-    #[snafu(display("{domain}: error setting the socket to non-blocking mode"))]
-    SetNonBlocking { domain: IP, source: std::io::Error },
-    #[snafu(display("{domain}: error creating a UDP socket from a standard socket"))]
-    UdpSocket { domain: IP, source: std::io::Error },
-    #[snafu(display("Cannot bind to IPv4 or IPv6"))]
+    #[error("{domain}: error setting the reuse port")]
+    ReusePort {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{domain}: error binding the socket for")]
+    Bind {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{domain}: error setting multicast loop")]
+    SetMulticastLoop {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{domain}: error joining multicast")]
+    JoinMulticast {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{domain}: error setting the multicast ttl")]
+    MulticastTtl {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{domain}: error setting the socket to non-blocking mode")]
+    SetNonBlocking {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{domain}: error creating a UDP socket from a standard socket")]
+    UdpSocket {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Cannot bind to IPv4 or IPv6")]
     CannotBind,
 }
 
 pub fn socket_v4() -> Result<UdpSocket, SocketError> {
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
-        .context(NewSocketSnafu { domain: IP::Ipv4 })?;
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|source| {
+        SocketError::NewSocket {
+            domain: IP::Ipv4,
+            source,
+        }
+    })?;
     socket
         .set_reuse_address(true)
-        .context(ReuseAddressSnafu { domain: IP::Ipv4 })?;
+        .map_err(|source| SocketError::ReuseAddress {
+            domain: IP::Ipv4,
+            source,
+        })?;
     #[cfg(unix)]
     socket
         .set_reuse_port(true)
-        .context(ReusePortSnafu { domain: IP::Ipv4 })?;
+        .map_err(|source| SocketError::ReusePort {
+            domain: IP::Ipv4,
+            source,
+        })?;
     socket
         .bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT).into())
-        .context(BindSnafu { domain: IP::Ipv4 })?;
+        .map_err(|source| SocketError::Bind {
+            domain: IP::Ipv4,
+            source,
+        })?;
     socket
         .set_multicast_loop_v4(true)
-        .context(SetMulticastLoopSnafu { domain: IP::Ipv4 })?;
+        .map_err(|source| SocketError::SetMulticastLoop {
+            domain: IP::Ipv4,
+            source,
+        })?;
     socket
         .join_multicast_v4(&MDNS_IPV4, &Ipv4Addr::UNSPECIFIED)
-        .context(JoinMulticastSnafu { domain: IP::Ipv4 })?;
+        .map_err(|source| SocketError::JoinMulticast {
+            domain: IP::Ipv4,
+            source,
+        })?;
     socket
         .set_multicast_ttl_v4(16)
-        .context(MulticastTtlSnafu { domain: IP::Ipv4 })?;
+        .map_err(|source| SocketError::MulticastTtl {
+            domain: IP::Ipv4,
+            source,
+        })?;
     socket
         .set_nonblocking(true)
-        .context(SetNonBlockingSnafu { domain: IP::Ipv4 })?;
-    UdpSocket::from_std(std::net::UdpSocket::from(socket))
-        .context(UdpSocketSnafu { domain: IP::Ipv4 })
+        .map_err(|source| SocketError::SetNonBlocking {
+            domain: IP::Ipv4,
+            source,
+        })?;
+    UdpSocket::from_std(std::net::UdpSocket::from(socket)).map_err(|source| {
+        SocketError::UdpSocket {
+            domain: IP::Ipv4,
+            source,
+        }
+    })
 }
 
 pub fn socket_v6() -> Result<UdpSocket, SocketError> {
-    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))
-        .context(NewSocketSnafu { domain: IP::Ipv6 })?;
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).map_err(|source| {
+        SocketError::NewSocket {
+            domain: IP::Ipv6,
+            source,
+        }
+    })?;
     socket
         .set_reuse_address(true)
-        .context(ReuseAddressSnafu { domain: IP::Ipv6 })?;
+        .map_err(|source| SocketError::ReuseAddress {
+            domain: IP::Ipv6,
+            source,
+        })?;
     #[cfg(unix)]
     socket
         .set_reuse_port(true)
-        .context(ReusePortSnafu { domain: IP::Ipv6 })?;
+        .map_err(|source| SocketError::ReusePort {
+            domain: IP::Ipv6,
+            source,
+        })?;
     socket
         .bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, MDNS_PORT)).into())
-        .context(BindSnafu { domain: IP::Ipv6 })?;
+        .map_err(|source| SocketError::Bind {
+            domain: IP::Ipv6,
+            source,
+        })?;
     socket
         .set_multicast_loop_v6(true)
-        .context(SetMulticastLoopSnafu { domain: IP::Ipv6 })?;
+        .map_err(|source| SocketError::SetMulticastLoop {
+            domain: IP::Ipv6,
+            source,
+        })?;
     socket
         .join_multicast_v6(&MDNS_IPV6, 0)
-        .context(JoinMulticastSnafu { domain: IP::Ipv6 })?;
+        .map_err(|source| SocketError::JoinMulticast {
+            domain: IP::Ipv6,
+            source,
+        })?;
     socket
         .set_nonblocking(true)
-        .context(SetNonBlockingSnafu { domain: IP::Ipv6 })?;
-    UdpSocket::from_std(std::net::UdpSocket::from(socket))
-        .context(UdpSocketSnafu { domain: IP::Ipv6 })
+        .map_err(|source| SocketError::SetNonBlocking {
+            domain: IP::Ipv6,
+            source,
+        })?;
+    UdpSocket::from_std(std::net::UdpSocket::from(socket)).map_err(|source| {
+        SocketError::UdpSocket {
+            domain: IP::Ipv6,
+            source,
+        }
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -124,7 +215,7 @@ impl Sockets {
                     v6: socket_v6().ok().map(Arc::new),
                 };
                 if socket.v4.is_none() && socket.v6.is_none() {
-                    return Err(CannotBindSnafu.build());
+                    return Err(SocketError::CannotBind);
                 }
                 Ok(socket)
             }

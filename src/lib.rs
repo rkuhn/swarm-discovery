@@ -8,7 +8,6 @@ mod updater;
 
 use acto::{AcTokio, ActoHandle, ActoRef, ActoRuntime, SupervisionRef, TokioJoinHandle};
 use hickory_proto::rr::Name;
-use snafu::prelude::*;
 use socket::{SocketError, Sockets};
 use std::{
     collections::BTreeMap,
@@ -17,6 +16,7 @@ use std::{
     str::FromStr,
     time::{Duration, Instant},
 };
+use thiserror::Error;
 use tokio::runtime::Handle;
 
 type Callback = Box<dyn FnMut(&str, &Peer) + Send + 'static>;
@@ -24,36 +24,40 @@ type Callback = Box<dyn FnMut(&str, &Peer) + Send + 'static>;
 pub(crate) type TxtData = BTreeMap<String, Option<String>>;
 
 /// Errors that can occur when spawning a swarm discovery service.
-#[derive(Debug, Snafu)]
+#[derive(Debug, Error)]
 pub enum SpawnError {
-    #[snafu(transparent)]
-    Sockets { source: SocketError },
-    #[snafu(display(
-        "Cannot construct service name from name '{name}' and protocol '{protocol}'"
-    ))]
+    #[error(transparent)]
+    Sockets {
+        #[from]
+        source: SocketError,
+    },
+    #[error("Cannot construct service name from name '{name}' and protocol '{protocol}'")]
     ServiceName {
+        #[source]
         source: hickory_proto::ProtoError,
         name: String,
         protocol: Protocol,
     },
-    #[snafu(display("Cannot construct name from peer ID {peer_id}"))]
+    #[error("Cannot construct name from peer ID {peer_id}")]
     NameFromPeerId {
+        #[source]
         source: hickory_proto::ProtoError,
         peer_id: String,
     },
-    #[snafu(display("Cannot append service name '{service_name}' to peer ID"))]
+    #[error("Cannot append service name '{service_name}' to peer ID")]
     AppendServiceName {
+        #[source]
         source: hickory_proto::ProtoError,
         service_name: Name,
     },
 }
 
 /// Errors that can occur when validating a txt attribute.
-#[derive(Debug, Snafu)]
+#[derive(Debug, Error)]
 pub enum TxtAttributeError {
-    #[snafu(display("Key may not be empty"))]
+    #[error("Key may not be empty")]
     EmptyKey,
-    #[snafu(display("Key-value pair is too long, must be shorter than 254 bytes"))]
+    #[error("Key-value pair is too long, must be shorter than 254 bytes")]
     TooLong,
 }
 
@@ -362,17 +366,20 @@ impl Discoverer {
         tracing::trace!(?sockets, "created new sockets");
 
         let service_name = Name::from_str(&format!("_{}.{}.local.", self.name, self.protocol))
-            .context(ServiceNameSnafu {
+            .map_err(|source| SpawnError::ServiceName {
+                source,
                 name: self.name.clone(),
                 protocol: self.protocol,
             })?;
         // need to test this here so it won't fail in the actor
         Name::from_str(&self.peer_id)
-            .context(NameFromPeerIdSnafu {
+            .map_err(|source| SpawnError::NameFromPeerId {
+                source,
                 peer_id: self.peer_id.clone(),
             })?
             .append_domain(&service_name)
-            .context(AppendServiceNameSnafu {
+            .map_err(|source| SpawnError::AppendServiceName {
+                source,
                 service_name: service_name.clone(),
             })?;
 
@@ -455,9 +462,9 @@ impl Drop for DropGuard {
 
 fn validate_txt_attribute(key: &str, value: Option<&str>) -> Result<(), TxtAttributeError> {
     if key.is_empty() {
-        Err(EmptyKeySnafu.build())
+        Err(TxtAttributeError::EmptyKey)
     } else if key.len() + value.as_ref().map(|v| v.len()).unwrap_or_default() > 254 {
-        Err(TooLongSnafu.build())
+        Err(TxtAttributeError::TooLong)
     } else {
         Ok(())
     }
@@ -523,10 +530,10 @@ mod tests {
             loop {
                 if let Some(peer) = rx.recv().await {
                     if peer.addrs().len() == 1 && peer.addrs()[0].1 == 9000 {
-                        return Ok::<_, snafu::Whatever>(peer);
+                        return Ok(peer);
                     }
                 } else {
-                    snafu::whatever!("Failed to receive updated peer");
+                    return Err(anyhow::anyhow!("Failed to receive updated peer"));
                 }
             }
         })

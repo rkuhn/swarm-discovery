@@ -16,15 +16,16 @@ serde = ["dep:serde"]
 
 [dependencies]
 acto = { version = "0.7.0", features = ["tokio"] }
-snafu = "0.8.5"
 hickory-proto = "0.25.1"
 rand = "0.8.5"
 serde = { version = "1.0.195", features = ["derive"], optional = true }
 socket2 = { version = "0.5.5", features = ["all"] }
 tokio = { version = "1.35.1", features = ["macros", "net", "rt", "time"] }
+thiserror = "2"
 tracing = "0.1.40"
 
 [dev-dependencies]
+anyhow = "1"
 if-addrs = "0.11.0"
 ipc-channel = "0.18.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
