@@ -7,9 +7,8 @@ mod socket;
 mod updater;
 
 use acto::{AcTokio, ActoHandle, ActoRef, ActoRuntime, SupervisionRef, TokioJoinHandle};
-use anyhow::{anyhow, Context};
 use hickory_proto::rr::Name;
-use socket::Sockets;
+use socket::{SocketError, Sockets};
 use std::{
     collections::BTreeMap,
     fmt::Display,
@@ -17,11 +16,50 @@ use std::{
     str::FromStr,
     time::{Duration, Instant},
 };
+use thiserror::Error;
 use tokio::runtime::Handle;
 
 type Callback = Box<dyn FnMut(&str, &Peer) + Send + 'static>;
 
 pub(crate) type TxtData = BTreeMap<String, Option<String>>;
+
+/// Errors that can occur when spawning a swarm discovery service.
+#[derive(Debug, Error)]
+pub enum SpawnError {
+    #[error(transparent)]
+    Sockets {
+        #[from]
+        source: SocketError,
+    },
+    #[error("Cannot construct service name from name '{name}' and protocol '{protocol}'")]
+    ServiceName {
+        #[source]
+        source: hickory_proto::ProtoError,
+        name: String,
+        protocol: Protocol,
+    },
+    #[error("Cannot construct name from peer ID {peer_id}")]
+    NameFromPeerId {
+        #[source]
+        source: hickory_proto::ProtoError,
+        peer_id: String,
+    },
+    #[error("Cannot append service name '{service_name}' to peer ID")]
+    AppendServiceName {
+        #[source]
+        source: hickory_proto::ProtoError,
+        service_name: Name,
+    },
+}
+
+/// Errors that can occur when validating a txt attribute.
+#[derive(Debug, Error)]
+pub enum TxtAttributeError {
+    #[error("Key may not be empty")]
+    EmptyKey,
+    #[error("Key-value pair is too long, must be shorter than 254 bytes")]
+    TooLong,
+}
 
 /// Builder for a swarm discovery service.
 ///
@@ -256,7 +294,7 @@ impl Discoverer {
     pub fn with_txt_attributes(
         mut self,
         attributes: impl IntoIterator<Item = (String, Option<String>)>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, TxtAttributeError> {
         let me = self
             .peers
             .entry(self.peer_id.clone())
@@ -322,18 +360,28 @@ impl Discoverer {
     ///
     /// This will spawn asynchronous tasks and return a guard which will stop the discovery when dropped.
     /// Changing the configuration is done by stopping the discovery and starting a new one.
-    pub fn spawn(self, handle: &Handle) -> anyhow::Result<DropGuard> {
+    pub fn spawn(self, handle: &Handle) -> Result<DropGuard, SpawnError> {
         let _entered = handle.enter();
         let sockets = Sockets::new(self.class)?;
         tracing::trace!(?sockets, "created new sockets");
 
         let service_name = Name::from_str(&format!("_{}.{}.local.", self.name, self.protocol))
-            .context("constructing service name")?;
+            .map_err(|source| SpawnError::ServiceName {
+                source,
+                name: self.name.clone(),
+                protocol: self.protocol,
+            })?;
         // need to test this here so it won't fail in the actor
         Name::from_str(&self.peer_id)
-            .context("constructing name from peer ID")?
+            .map_err(|source| SpawnError::NameFromPeerId {
+                source,
+                peer_id: self.peer_id.clone(),
+            })?
             .append_domain(&service_name)
-            .context("appending service name to peer ID")?;
+            .map_err(|source| SpawnError::AppendServiceName {
+                source,
+                service_name: service_name.clone(),
+            })?;
 
         let rt = AcTokio::from_handle("swarm-discovery", handle.clone());
         let SupervisionRef { me, handle } = rt.spawn_actor("guardian", move |ctx| {
@@ -390,7 +438,11 @@ impl DropGuard {
     /// The total length of all attributes is not checked here. You should make sure
     /// to keep the total length of all attributes at a few hundred bytes so that
     /// the resulting DNS packet does not exceed the UDP MTU.
-    pub fn set_txt_attribute(&self, key: String, value: Option<String>) -> anyhow::Result<()> {
+    pub fn set_txt_attribute(
+        &self,
+        key: String,
+        value: Option<String>,
+    ) -> Result<(), TxtAttributeError> {
         validate_txt_attribute(&key, value.as_deref())?;
         self.aref.send(guardian::Input::SetTxt(key, value));
         Ok(())
@@ -408,13 +460,11 @@ impl Drop for DropGuard {
     }
 }
 
-fn validate_txt_attribute(key: &str, value: Option<&str>) -> anyhow::Result<()> {
+fn validate_txt_attribute(key: &str, value: Option<&str>) -> Result<(), TxtAttributeError> {
     if key.is_empty() {
-        Err(anyhow!("Key may not be empty"))
+        Err(TxtAttributeError::EmptyKey)
     } else if key.len() + value.as_ref().map(|v| v.len()).unwrap_or_default() > 254 {
-        Err(anyhow!(
-            "Key-value pair is too long, must be shorter than 254 bytes"
-        ))
+        Err(TxtAttributeError::TooLong)
     } else {
         Ok(())
     }

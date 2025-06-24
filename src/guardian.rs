@@ -1,5 +1,5 @@
 use crate::{
-    receiver::receiver,
+    receiver::{receiver, ReceiverError},
     sender::{self, sender},
     socket::Sockets,
     updater::updater,
@@ -19,7 +19,7 @@ pub enum Input {
 }
 
 pub async fn guardian(
-    mut ctx: ActoCell<Input, AcTokioRuntime, anyhow::Result<()>>,
+    mut ctx: ActoCell<Input, AcTokioRuntime, Result<(), ReceiverError>>,
     mut discoverer: Discoverer,
     sockets: Sockets,
     service_name: Name,
