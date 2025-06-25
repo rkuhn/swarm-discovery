@@ -533,7 +533,7 @@ mod tests {
                         return Ok(peer);
                     }
                 } else {
-                    return Err(anyhow::anyhow!("Failed to receive updated peer"));
+                    return Err("Failed to receive updated peer");
                 }
             }
         })

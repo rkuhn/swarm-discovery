@@ -1,6 +1,6 @@
 [package]
 name = "swarm-discovery"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 authors = ["Roland Kuhn"]
 description = "Discovery service for IP-based swarms"
@@ -15,20 +15,19 @@ documentation = "https://docs.rs/swarm-discovery"
 serde = ["dep:serde"]
 
 [dependencies]
-acto = { version = "0.7.0", features = ["tokio"] }
-hickory-proto = "0.25.1"
+acto = { version = "0.7.4", features = ["tokio"] }
+hickory-proto = "0.25.2"
 rand = "0.8.5"
-serde = { version = "1.0.195", features = ["derive"], optional = true }
-socket2 = { version = "0.5.5", features = ["all"] }
-tokio = { version = "1.35.1", features = ["macros", "net", "rt", "time"] }
+serde = { version = "1.0.219", features = ["derive"], optional = true }
+socket2 = { version = "0.5.10", features = ["all"] }
+tokio = { version = "1.45.1", features = ["macros", "net", "rt", "time"] }
 thiserror = "2"
-tracing = "0.1.40"
+tracing = "0.1.41"
 
 [dev-dependencies]
-anyhow = "1"
-if-addrs = "0.11.0"
-ipc-channel = "0.18.0"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+if-addrs = "0.11.1"
+ipc-channel = "0.18.3"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 netsim-embed = { version = "0.9.1", features = ["ipc"] }
