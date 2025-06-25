@@ -11,7 +11,7 @@ use hickory_proto::{
         DNSClass, Name, RData, Record, RecordType,
     },
 };
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 use std::{collections::BTreeMap, net::IpAddr, str::FromStr, time::Duration};
 
 const RESPONSE_DELAY: Duration = Duration::from_millis(100);
@@ -55,7 +55,7 @@ pub async fn sender(
             // grow the interval from which the randomized part is draw
             // with the swarm size to keep the number of duplicates low
             let interval = tau * swarm_size as u32 / 10;
-            let millionth = thread_rng().gen_range(0..1_000_000);
+            let millionth = rng().random_range(0..1_000_000);
             let delay = tau + interval / 1_000_000 * millionth;
             tracing::debug!(?delay, "waiting for query");
             tokio::time::sleep(delay).await;
@@ -107,7 +107,7 @@ pub async fn sender(
             // with the swarm size to keep the number of duplicates low
             // goal is "cutoff within 100ms"
             let interval = RESPONSE_DELAY * swarm_size as u32 / cutoff;
-            let millionth = thread_rng().gen_range(0..1_000_000);
+            let millionth = rng().random_range(0..1_000_000);
             let mut delay = interval / 1_000_000 * millionth;
             delay += extra_delay;
             tracing::debug!(?delay, "waiting to respond");

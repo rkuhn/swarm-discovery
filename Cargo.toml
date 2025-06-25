@@ -17,7 +17,7 @@ serde = ["dep:serde"]
 [dependencies]
 acto = { version = "0.7.4", features = ["tokio"] }
 hickory-proto = "0.25.2"
-rand = "0.8.5"
+rand = "0.9.1"
 serde = { version = "1.0.219", features = ["derive"], optional = true }
 socket2 = { version = "0.5.10", features = ["all"] }
 tokio = { version = "1.45.1", features = ["macros", "net", "rt", "time"] }
@@ -25,8 +25,8 @@ thiserror = "2"
 tracing = "0.1.41"
 
 [dev-dependencies]
-if-addrs = "0.11.1"
-ipc-channel = "0.18.3"
+if-addrs = "0.13.4"
+ipc-channel = "0.20.0"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

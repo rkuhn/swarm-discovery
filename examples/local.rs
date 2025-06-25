@@ -1,10 +1,10 @@
 use if_addrs::get_if_addrs;
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
+use std::collections::HashSet;
 use std::{
     io::{stderr, stdin},
     net::UdpSocket,
 };
-use std::collections::HashSet;
 use swarm_discovery::Discoverer;
 use tokio::runtime::Builder;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -26,7 +26,7 @@ fn main() {
         .expect("build runtime");
 
     // make up some peer ID
-    let my_peer_id = format!("peer_id{}", thread_rng().gen_range(0..100));
+    let my_peer_id = format!("peer_id{}", rng().random_range(0..100));
 
     // get local addresses and make up some port
     let addrs = get_if_addrs()
@@ -43,7 +43,7 @@ fn main() {
     println!("my_peer_id: {}", my_peer_id);
     println!("addrs: {:?}", addrs);
 
-    let mut peer_set : HashSet<String> = HashSet::new();
+    let mut peer_set: HashSet<String> = HashSet::new();
     peer_set.insert(my_peer_id.clone());
     println!("peer set: {:?}", peer_set);
 
