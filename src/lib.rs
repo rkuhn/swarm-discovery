@@ -101,6 +101,7 @@ pub struct Discoverer {
     tau: Duration,
     phi: f32,
     class: IpClass,
+    multicast_interfaces: Vec<IpAddr>,
 }
 
 /// A peer discovered by the swarm discovery service.
@@ -236,6 +237,7 @@ impl Discoverer {
             tau: Duration::from_secs(10),
             phi: 1.0,
             class: IpClass::default(),
+            multicast_interfaces: Vec::new(),
         }
     }
 
@@ -356,13 +358,26 @@ impl Discoverer {
         self
     }
 
+    /// Set which IPv4 addresses to use for sending multicast messages.
+    ///
+    /// By default (empty vector), multicast messages are sent only on the default interface.
+    /// Provide a list of local IPv4 addresses to send multicast messages on specific interfaces.
+    ///
+    /// This improves discovery in multi-homed environments where peers may be on different 
+    /// network segments. Note that this only affects IPv4; IPv6 multicast always uses the 
+    /// default interface.
+    pub fn with_multicast_interfaces(mut self, interfaces: Vec<IpAddr>) -> Self {
+        self.multicast_interfaces = interfaces;
+        self
+    }
+
     /// Start the discovery service.
     ///
     /// This will spawn asynchronous tasks and return a guard which will stop the discovery when dropped.
     /// Changing the configuration is done by stopping the discovery and starting a new one.
     pub fn spawn(self, handle: &Handle) -> Result<DropGuard, SpawnError> {
         let _entered = handle.enter();
-        let sockets = Sockets::new(self.class)?;
+        let sockets = Sockets::new(self.class, self.multicast_interfaces.clone())?;
         tracing::trace!(?sockets, "created new sockets");
 
         let service_name = Name::from_str(&format!("_{}.{}.local.", self.name, self.protocol))
@@ -451,6 +466,30 @@ impl DropGuard {
     /// Removes a TXT attribute.
     pub fn remove_txt_attribute(&self, key: String) {
         self.aref.send(guardian::Input::RemoveTxt(key));
+    }
+
+    /// Add a new IPv4 interface for multicast operations.
+    ///
+    /// This allows adding network interfaces dynamically after the discovery service
+    /// has started. Useful for systems where network interfaces may come up after
+    /// the application starts.
+    ///
+    /// Note: This only affects IPv4. IPv6 multicast always uses the default interface.
+    pub fn add_interface(&self, interface: IpAddr) {
+        if interface.is_ipv4() {
+            self.aref.send(guardian::Input::AddInterface(interface));
+        }
+    }
+
+    /// Remove an IPv4 interface from multicast operations.
+    ///
+    /// This stops sending multicast messages on the specified interface.
+    ///
+    /// Note: This only affects IPv4. IPv6 multicast always uses the default interface.
+    pub fn remove_interface(&self, interface: IpAddr) {
+        if interface.is_ipv4() {
+            self.aref.send(guardian::Input::RemoveInterface(interface));
+        }
     }
 }
 
