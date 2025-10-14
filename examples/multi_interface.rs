@@ -63,71 +63,83 @@ fn main() {
     println!("peer set: {:?}", peer_set);
 
     // Get initial local IPs for multicast
-    let initial_ips: Vec<std::net::IpAddr> = get_if_addrs()
+    let initial_ips: Vec<std::net::Ipv4Addr> = get_if_addrs()
         .expect("get_if_addrs")
         .into_iter()
         .filter(|iface| !iface.is_loopback())
         .map(|iface| iface.addr.ip())
+        .filter_map(|ip| match ip {
+            std::net::IpAddr::V4(ipv4) => Some(ipv4),
+            std::net::IpAddr::V6(_) => None,
+        })
         .collect();
-    
+
     println!("Initial interfaces: {:?}", initial_ips);
 
     // start announcing and discovering with multi-interface support
-    let guard = Arc::new(Discoverer::new_interactive("swarm".to_owned(), my_peer_id.clone())
-        .with_addrs(port, addrs.iter().take(1).copied())
-        .with_addrs(port + 1, addrs)
-        .with_multicast_interfaces(initial_ips.clone()) // Start with initial interfaces
-        .with_callback(move |peer_id, peer| {
-            if peer_set.insert(peer_id.to_string()) {
-                println!("new peer discovered {peer_id}: {:?}", peer);
-                println!("peer set: {:?}", peer_set);
-            }
+    let guard = Arc::new(
+        Discoverer::new_interactive("swarm".to_owned(), my_peer_id.clone())
+            .with_addrs(port, addrs.iter().take(1).copied())
+            .with_addrs(port + 1, addrs)
+            .with_multicast_interfaces_v4(initial_ips.clone()) // Start with initial interfaces
+            .with_callback(move |peer_id, peer| {
+                if peer_set.insert(peer_id.to_string()) {
+                    println!("new peer discovered {peer_id}: {:?}", peer);
+                    println!("peer set: {:?}", peer_set);
+                }
 
-            if peer.addrs().is_empty() {
-                println!("peer removed: {peer_id}");
-                peer_set.remove(peer_id);
-                println!("peer set: {:?}", peer_set);
-            }
-        })
-        .spawn(rt.handle())
-        .expect("discoverer spawn"));
+                if peer.addrs().is_empty() {
+                    println!("peer removed: {peer_id}");
+                    peer_set.remove(peer_id);
+                    println!("peer set: {:?}", peer_set);
+                }
+            })
+            .spawn(rt.handle())
+            .expect("discoverer spawn"),
+    );
 
     // Spawn interface monitoring task
     let guard_clone = guard.clone();
-    let mut known_interfaces: HashSet<std::net::IpAddr> = initial_ips.into_iter().collect();
-    
+    let mut known_interfaces: HashSet<std::net::Ipv4Addr> = initial_ips.into_iter().collect();
+
     rt.spawn(async move {
         println!("\nStarting interface monitor (checking every 5 seconds)...");
-        
+
         loop {
             time::sleep(Duration::from_secs(5)).await;
-            
+
             // Get current network interfaces
-            let current_interfaces: HashSet<std::net::IpAddr> = match get_if_addrs() {
+            let current_interfaces: HashSet<std::net::Ipv4Addr> = match get_if_addrs() {
                 Ok(addrs) => addrs
                     .into_iter()
                     .filter(|iface| !iface.is_loopback())
                     .map(|iface| iface.addr.ip())
-                    .filter(|ip| ip.is_ipv4()) // Only monitor IPv4 interfaces
+                    .filter_map(|ip| match ip {
+                        std::net::IpAddr::V4(ipv4) => Some(ipv4),
+                        std::net::IpAddr::V6(_) => None,
+                    })
                     .collect(),
                 Err(e) => {
                     eprintln!("Failed to get interfaces: {}", e);
                     continue;
                 }
             };
-            
+
             // Check for new interfaces
             for new_if in current_interfaces.difference(&known_interfaces) {
-                println!("📡 New interface detected: {} - adding to multicast", new_if);
-                guard_clone.add_interface(*new_if);
+                println!(
+                    "📡 New interface detected: {} - adding to multicast",
+                    new_if
+                );
+                guard_clone.add_interface_v4(*new_if);
             }
-            
+
             // Check for removed interfaces
             for old_if in known_interfaces.difference(&current_interfaces) {
                 println!("❌ Interface removed: {} - removing from multicast", old_if);
-                guard_clone.remove_interface(*old_if);
+                guard_clone.remove_interface_v4(*old_if);
             }
-            
+
             known_interfaces = current_interfaces;
         }
     });
@@ -135,7 +147,7 @@ fn main() {
     println!("\nPress Enter to exit...");
     println!("While running, try connecting/disconnecting VPN, USB network adapters, etc.");
     println!("The discoverer will automatically adapt to network changes!\n");
-    
+
     // end program when user presses Enter
     stdin().read_line(&mut String::new()).expect("read_line");
 }

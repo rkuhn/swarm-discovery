@@ -12,7 +12,7 @@ use socket::{SocketError, Sockets};
 use std::{
     collections::BTreeMap,
     fmt::Display,
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     str::FromStr,
     time::{Duration, Instant},
 };
@@ -101,7 +101,7 @@ pub struct Discoverer {
     tau: Duration,
     phi: f32,
     class: IpClass,
-    multicast_interfaces: Vec<IpAddr>,
+    multicast_interfaces: Vec<Ipv4Addr>,
 }
 
 /// A peer discovered by the swarm discovery service.
@@ -363,10 +363,10 @@ impl Discoverer {
     /// By default (empty vector), multicast messages are sent only on the default interface.
     /// Provide a list of local IPv4 addresses to send multicast messages on specific interfaces.
     ///
-    /// This improves discovery in multi-homed environments where peers may be on different 
-    /// network segments. Note that this only affects IPv4; IPv6 multicast always uses the 
+    /// This improves discovery in multi-homed environments where peers may be on different
+    /// network segments. Note that this only affects IPv4; IPv6 multicast always uses the
     /// default interface.
-    pub fn with_multicast_interfaces(mut self, interfaces: Vec<IpAddr>) -> Self {
+    pub fn with_multicast_interfaces_v4(mut self, interfaces: Vec<Ipv4Addr>) -> Self {
         self.multicast_interfaces = interfaces;
         self
     }
@@ -475,10 +475,9 @@ impl DropGuard {
     /// the application starts.
     ///
     /// Note: This only affects IPv4. IPv6 multicast always uses the default interface.
-    pub fn add_interface(&self, interface: IpAddr) {
-        if interface.is_ipv4() {
-            self.aref.send(guardian::Input::AddInterface(interface));
-        }
+    pub fn add_interface_v4(&self, interface: Ipv4Addr) {
+        self.aref
+            .send(guardian::Input::AddInterface(IpAddr::V4(interface)));
     }
 
     /// Remove an IPv4 interface from multicast operations.
@@ -486,10 +485,9 @@ impl DropGuard {
     /// This stops sending multicast messages on the specified interface.
     ///
     /// Note: This only affects IPv4. IPv6 multicast always uses the default interface.
-    pub fn remove_interface(&self, interface: IpAddr) {
-        if interface.is_ipv4() {
-            self.aref.send(guardian::Input::RemoveInterface(interface));
-        }
+    pub fn remove_interface_v4(&self, interface: Ipv4Addr) {
+        self.aref
+            .send(guardian::Input::RemoveInterface(IpAddr::V4(interface)));
     }
 }
 
