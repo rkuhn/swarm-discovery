@@ -525,6 +525,7 @@ mod tests {
         // First Discoverer (the one we're testing)
         let discoverer1 = Discoverer::new("test_service".to_string(), peer_id1.clone())
             .with_addrs(8000, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))])
+            .with_multicast_interfaces_v4(vec![Ipv4Addr::new(127, 0, 0, 1)])
             .with_cadence(Duration::from_secs(1))
             .with_response_rate(1.0);
 

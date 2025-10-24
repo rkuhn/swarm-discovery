@@ -228,16 +228,14 @@ impl Sockets {
     pub fn new(class: IpClass, multicast_interfaces: Vec<Ipv4Addr>) -> Result<Self, SocketError> {
         // Create interface-specific sockets for multi-interface mode
         let mut interface_sockets_v4 = HashMap::new();
-        if !multicast_interfaces.is_empty() {
-            for addr in &multicast_interfaces {
-                match socket_v4(Some(*addr)) {
-                    Ok(socket) => {
-                        tracing::debug!("Created interface-specific socket for {}", addr);
-                        interface_sockets_v4.insert(*addr, Arc::new(socket));
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to create interface socket for {}: {}", addr, e);
-                    }
+        for addr in &multicast_interfaces {
+            match socket_v4(Some(*addr)) {
+                Ok(socket) => {
+                    tracing::debug!("Created interface-specific socket for {}", addr);
+                    interface_sockets_v4.insert(*addr, Arc::new(socket));
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to create interface socket for {}: {}", addr, e);
                 }
             }
         }
@@ -280,11 +278,21 @@ impl Sockets {
     /// Add a new IPv4 interface for multicast operations.
     /// Returns Ok(()) if the socket was successfully created and added.
     pub fn add_interface_v4(&self, addr: Ipv4Addr) -> Result<(), SocketError> {
+        // Check if interface already exists
+        if self
+            .interface_sockets_v4
+            .read()
+            .unwrap()
+            .contains_key(&addr)
+        {
+            return Ok(());
+        }
+
         // Create the interface-specific socket for sending
         let socket = socket_v4(Some(addr))?;
 
         let mut interfaces = self.interface_sockets_v4.write().unwrap();
-        // Check if interface already exists
+        // need to recheck since we dropped the lock in between
         if !interfaces.contains_key(&addr) {
             interfaces.insert(addr, Arc::new(socket));
             tracing::info!("Added interface {} for multicast", addr);
@@ -298,7 +306,10 @@ impl Sockets {
         let mut interfaces = self.interface_sockets_v4.write().unwrap();
 
         if interfaces.contains_key(&addr) {
-            interfaces.remove(&addr);
+            let socket = interfaces.remove(&addr);
+            drop(interfaces);
+            // drop socket outside the lock
+            drop(socket);
             tracing::info!("Removed interface {} from multicast", addr);
 
             true
@@ -319,7 +330,7 @@ impl Sockets {
     /// Get all interface addresses that have sockets
     pub fn get_all_interface_addresses_v4(&self) -> Vec<Ipv4Addr> {
         let interfaces = self.interface_sockets_v4.read().unwrap();
-        interfaces.iter().map(|(addr, _)| *addr).collect()
+        interfaces.keys().copied().collect()
     }
 
     pub async fn send_msg(&self, msg: &Message, mode: Mode) {
