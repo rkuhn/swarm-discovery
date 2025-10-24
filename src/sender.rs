@@ -282,5 +282,13 @@ fn update_response(
                 None
             }
         }
+        guardian::Input::AddInterface(_addr) => {
+            // Interface changes don't affect the response content
+            None
+        }
+        guardian::Input::RemoveInterface(_addr) => {
+            // Interface changes don't affect the response content
+            None
+        }
     }
 }
