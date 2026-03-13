@@ -1,2 +1,6 @@
 /target
 /Cargo.lock
+/tests/nixos/test-node/target
+tests/nixos/test-node/Cargo.lock
+result
+.nixos-test-history

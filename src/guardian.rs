@@ -5,9 +5,9 @@ use crate::{
     updater::updater,
     Discoverer,
 };
-use acto::{AcTokioRuntime, ActoCell, ActoInput, ActoRef};
+use acto::{AcTokioRuntime, ActoCell, ActoInput};
 use hickory_proto::rr::Name;
-use std::{collections::HashMap, mem::replace, net::IpAddr};
+use std::{mem::replace, net::IpAddr};
 
 pub enum Input {
     RemoveAll,
@@ -59,24 +59,7 @@ pub async fn guardian(
         });
     }
 
-    // Track interface receivers so we can stop them when interfaces are removed
-    let mut interface_receivers: HashMap<IpAddr, ActoRef<()>> = HashMap::new();
-
-    // Start receivers for initial interface sockets
-    let initial_interfaces = sockets2.get_all_interface_addresses_v4();
-    for addr in initial_interfaces {
-        if let Some(socket) = sockets2.get_interface_socket_v4(addr) {
-            let service_name = service_name.clone();
-            let snd_ref = snd_ref.clone();
-            let addr_str = addr.to_string();
-            let receiver_ref = ctx
-                .spawn_supervised(&format!("receiver_interface_{}", addr_str), move |ctx| {
-                    receiver(ctx, service_name, socket, snd_ref)
-                });
-            interface_receivers.insert(IpAddr::V4(addr), receiver_ref);
-            tracing::info!("Started receiver for initial interface {}", addr);
-        }
-    }
+    // only spawn receiver on 0.0.0.0
 
     // only stop when a supervised actor stops
     loop {
@@ -101,28 +84,17 @@ pub async fn guardian(
                         if let Err(e) = sockets2.add_interface_v4(*ipv4) {
                             tracing::warn!("Failed to add interface {}: {}", addr, e);
                         } else {
-                            // Start a receiver for the new interface socket
-                            if let Some(socket) = sockets2.get_interface_socket_v4(*ipv4) {
-                                let service_name = service_name.clone();
-                                let snd_ref = snd_ref.clone();
-                                let addr_str = addr.to_string();
-                                let receiver_ref = ctx.spawn_supervised(
-                                    &format!("receiver_interface_{}", addr_str),
-                                    move |ctx| receiver(ctx, service_name, socket, snd_ref),
-                                );
-                                interface_receivers.insert(*addr, receiver_ref);
-                                tracing::info!("Started receiver for interface {}", addr);
-                            }
+                            tracing::info!("Added send-only socket for interface {}", addr);
+                            // Note: We do NOT spawn a receiver for this interface.
+                            // The main v4 receiver already handles receiving from all interfaces.
+                            // This interface is only used for sending multicast.
                         }
                     }
                 }
                 Input::RemoveInterface(addr) => {
                     if let IpAddr::V4(ipv4) = addr {
                         sockets2.remove_interface_v4(*ipv4);
-                        // Remove the receiver reference for this interface
-                        if interface_receivers.remove(addr).is_some() {
-                            tracing::info!("Removed receiver reference for interface {}", addr);
-                        }
+                        tracing::info!("Removed send-only socket for interface {}", addr);
                     }
                 }
                 _ => {
