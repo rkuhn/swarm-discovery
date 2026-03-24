@@ -5,13 +5,13 @@ use crate::{
 };
 use acto::{AcTokioRuntime, ActoCell, ActoInput, ActoRef};
 use hickory_proto::{
-    op::{Message, MessageType, Query},
+    op::{Message, MessageType, OpCode, Query},
     rr::{
         rdata::{self, TXT},
         DNSClass, Name, RData, Record, RecordType,
     },
 };
-use rand::{rng, Rng};
+use rand::{rng, RngExt};
 use std::{collections::BTreeMap, net::IpAddr, str::FromStr, time::Duration};
 
 const RESPONSE_DELAY: Duration = Duration::from_millis(100);
@@ -153,8 +153,7 @@ pub async fn sender(
 }
 
 fn make_query(service_name: &Name) -> Message {
-    let mut msg = Message::new();
-    msg.set_message_type(MessageType::Query);
+    let mut msg = Message::new(0, MessageType::Query, OpCode::Query);
     let mut query = Query::new();
     query.set_query_class(DNSClass::IN);
     query.set_query_type(RecordType::PTR);
@@ -165,8 +164,7 @@ fn make_query(service_name: &Name) -> Message {
 
 fn make_response(discoverer: &Discoverer, service_name: &Name) -> Option<Message> {
     if let Some(peer) = discoverer.peers.get(&discoverer.peer_id) {
-        let mut msg = Message::new();
-        msg.set_message_type(MessageType::Response);
+        let mut msg = Message::new(0, MessageType::Response, OpCode::Query);
         msg.set_authoritative(true);
 
         let my_srv_name = Name::from_str(&discoverer.peer_id)
