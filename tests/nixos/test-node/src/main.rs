@@ -1,12 +1,27 @@
 use std::env;
+use std::ffi::CString;
 use std::fs;
 use std::io::Write;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use swarm_discovery::{Discoverer, IpClass};
 use tokio::time::sleep;
+
+/// Convert an interface name to its OS interface index.
+fn if_nametoindex(name: &str) -> u32 {
+    let c_name = CString::new(name).expect("invalid interface name");
+    let idx = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
+    if idx == 0 {
+        panic!(
+            "interface '{}' not found: {}",
+            name,
+            std::io::Error::last_os_error()
+        );
+    }
+    idx
+}
 
 fn main() {
     tracing_subscriber::fmt()
@@ -15,17 +30,22 @@ fn main() {
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 4 {
-        eprintln!("Usage: {} <peer-id> <port> <interface-ip> [<interface-ip>...]", args[0]);
+        eprintln!(
+            "Usage: {} <peer-id> <port> <interface-name> [<interface-name>...]",
+            args[0]
+        );
         std::process::exit(1);
     }
 
     let peer_id = args[1].clone();
     let port: u16 = args[2].parse().expect("valid port");
-    let interfaces: Vec<Ipv4Addr> = args[3..]
-        .iter()
-        .map(|s| s.parse().expect("valid IPv4 address"))
-        .collect();
-    let addrs: Vec<IpAddr> = interfaces.iter().map(|ip| IpAddr::V4(*ip)).collect();
+
+    // Accept interface names and resolve to indices
+    let iface_names: Vec<String> = args[3..].to_vec();
+    let iface_indices: Vec<u32> = iface_names.iter().map(|n| if_nametoindex(n)).collect();
+
+    // Get IP addresses for each interface to advertise
+    let addrs: Vec<IpAddr> = if_addrs_for_names(&iface_names);
 
     let events_path = PathBuf::from(format!("/tmp/discovery-events-{}.jsonl", peer_id));
     let cmd_path = PathBuf::from(format!("/tmp/discovery-cmd-{}", peer_id));
@@ -51,7 +71,7 @@ fn main() {
     let guard = Discoverer::new("nixtest".to_owned(), peer_id.clone())
         .with_addrs(port, addrs)
         .with_ip_class(IpClass::V4Only)
-        .with_multicast_interfaces_v4(interfaces)
+        .with_multicast_interfaces_v4(iface_indices)
         .with_cadence(Duration::from_millis(500))
         .with_response_rate(5.0)
         .with_callback(move |pid, peer| {
@@ -99,14 +119,14 @@ fn main() {
             let parts: Vec<&str> = contents.split_whitespace().collect();
             match parts.first().copied() {
                 Some("add_interface") => {
-                    let addr: Ipv4Addr = parts[1].parse().unwrap();
-                    guard.add_interface_v4(addr);
-                    eprintln!("Added interface {}", addr);
+                    let ifindex = if_nametoindex(parts[1]);
+                    guard.add_interface_v4(ifindex);
+                    eprintln!("Added interface {} (index {})", parts[1], ifindex);
                 }
                 Some("remove_interface") => {
-                    let addr: Ipv4Addr = parts[1].parse().unwrap();
-                    guard.remove_interface_v4(addr);
-                    eprintln!("Removed interface {}", addr);
+                    let ifindex = if_nametoindex(parts[1]);
+                    guard.remove_interface_v4(ifindex);
+                    eprintln!("Removed interface {} (index {})", parts[1], ifindex);
                 }
                 Some("add_addr") => {
                     let p: u16 = parts[1].parse().unwrap();
@@ -131,4 +151,16 @@ fn main() {
     });
 
     drop(guard);
+}
+
+/// Look up the IPv4 addresses assigned to the given interface names.
+fn if_addrs_for_names(names: &[String]) -> Vec<IpAddr> {
+    let all_addrs = if_addrs::get_if_addrs().expect("get_if_addrs");
+    let mut result = Vec::new();
+    for iface in all_addrs {
+        if names.contains(&iface.name) && iface.addr.ip().is_ipv4() {
+            result.push(iface.addr.ip());
+        }
+    }
+    result
 }

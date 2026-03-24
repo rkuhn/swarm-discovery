@@ -1,6 +1,7 @@
 use if_addrs::get_if_addrs;
 use rand::{rng, Rng};
 use std::collections::HashSet;
+use std::ffi::CString;
 use std::{
     io::{stderr, stdin},
     net::UdpSocket,
@@ -11,6 +12,28 @@ use swarm_discovery::Discoverer;
 use tokio::runtime::Builder;
 use tokio::time;
 use tracing_subscriber::{fmt, EnvFilter};
+
+/// Convert an interface name to its OS interface index.
+fn if_nametoindex(name: &str) -> Option<u32> {
+    let c_name = CString::new(name).ok()?;
+    let idx = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
+    if idx == 0 {
+        None
+    } else {
+        Some(idx)
+    }
+}
+
+/// Get the set of non-loopback IPv4 interface indices.
+fn get_interface_indices() -> HashSet<u32> {
+    get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|iface| !iface.is_loopback())
+        .filter(|iface| iface.addr.ip().is_ipv4())
+        .filter_map(|iface| if_nametoindex(&iface.name))
+        .collect()
+}
 
 /// Example demonstrating multi-interface multicast support with dynamic interface management.
 ///
@@ -62,26 +85,16 @@ fn main() {
     peer_set.insert(my_peer_id.clone());
     println!("peer set: {:?}", peer_set);
 
-    // Get initial local IPs for multicast
-    let initial_ips: Vec<std::net::Ipv4Addr> = get_if_addrs()
-        .expect("get_if_addrs")
-        .into_iter()
-        .filter(|iface| !iface.is_loopback())
-        .map(|iface| iface.addr.ip())
-        .filter_map(|ip| match ip {
-            std::net::IpAddr::V4(ipv4) => Some(ipv4),
-            std::net::IpAddr::V6(_) => None,
-        })
-        .collect();
-
-    println!("Initial interfaces: {:?}", initial_ips);
+    // Get initial interface indices for multicast
+    let initial_indices = get_interface_indices();
+    println!("Initial interface indices: {:?}", initial_indices);
 
     // start announcing and discovering with multi-interface support
     let guard = Arc::new(
         Discoverer::new_interactive("swarm".to_owned(), my_peer_id.clone())
             .with_addrs(port, addrs.iter().take(1).copied())
             .with_addrs(port + 1, addrs)
-            .with_multicast_interfaces_v4(initial_ips.clone()) // Start with initial interfaces
+            .with_multicast_interfaces_v4(initial_indices.iter().copied())
             .with_callback(move |peer_id, peer| {
                 if peer_set.insert(peer_id.to_string()) {
                     println!("new peer discovered {peer_id}: {:?}", peer);
@@ -100,7 +113,7 @@ fn main() {
 
     // Spawn interface monitoring task
     let guard_clone = guard.clone();
-    let mut known_interfaces: HashSet<std::net::Ipv4Addr> = initial_ips.into_iter().collect();
+    let mut known_interfaces = initial_indices;
 
     rt.spawn(async move {
         println!("\nStarting interface monitor (checking every 5 seconds)...");
@@ -108,36 +121,24 @@ fn main() {
         loop {
             time::sleep(Duration::from_secs(5)).await;
 
-            // Get current network interfaces
-            let current_interfaces: HashSet<std::net::Ipv4Addr> = match get_if_addrs() {
-                Ok(addrs) => addrs
-                    .into_iter()
-                    .filter(|iface| !iface.is_loopback())
-                    .map(|iface| iface.addr.ip())
-                    .filter_map(|ip| match ip {
-                        std::net::IpAddr::V4(ipv4) => Some(ipv4),
-                        std::net::IpAddr::V6(_) => None,
-                    })
-                    .collect(),
-                Err(e) => {
-                    eprintln!("Failed to get interfaces: {}", e);
-                    continue;
-                }
-            };
+            let current_interfaces = get_interface_indices();
 
             // Check for new interfaces
-            for new_if in current_interfaces.difference(&known_interfaces) {
+            for &new_if in current_interfaces.difference(&known_interfaces) {
                 println!(
-                    "📡 New interface detected: {} - adding to multicast",
+                    "New interface detected: index {} - adding to multicast",
                     new_if
                 );
-                guard_clone.add_interface_v4(*new_if);
+                guard_clone.add_interface_v4(new_if);
             }
 
             // Check for removed interfaces
-            for old_if in known_interfaces.difference(&current_interfaces) {
-                println!("❌ Interface removed: {} - removing from multicast", old_if);
-                guard_clone.remove_interface_v4(*old_if);
+            for &old_if in known_interfaces.difference(&current_interfaces) {
+                println!(
+                    "Interface removed: index {} - removing from multicast",
+                    old_if
+                );
+                guard_clone.remove_interface_v4(old_if);
             }
 
             known_interfaces = current_interfaces;

@@ -89,11 +89,12 @@ pkgs.testers.nixosTest {
     # Phase 1: Basic discovery on VLAN 1
     # ============================================================
     with subtest("Basic discovery on VLAN 1"):
+        # CLI now takes interface names instead of IPs
         node1.succeed(
-            "RUST_LOG=debug swarm-discovery-test-node node1 5000 192.168.1.1 &> /tmp/test-node1.log &"
+            "RUST_LOG=debug swarm-discovery-test-node node1 5000 eth1 &> /tmp/test-node1.log &"
         )
         node2.succeed(
-            "RUST_LOG=debug swarm-discovery-test-node node2 5000 192.168.1.2 &> /tmp/test-node2.log &"
+            "RUST_LOG=debug swarm-discovery-test-node node2 5000 eth1 &> /tmp/test-node2.log &"
         )
 
         node1.wait_for_file("/tmp/discovery-ready-node1")
@@ -126,8 +127,9 @@ pkgs.testers.nixosTest {
     # Phase 2: Add VLAN 2 interface dynamically
     # ============================================================
     with subtest("Dynamic interface addition on VLAN 2"):
-        send_command(node1, "node1", "add_interface 192.168.2.1")
-        send_command(node2, "node2", "add_interface 192.168.2.2")
+        # add_interface now takes interface name
+        send_command(node1, "node1", "add_interface eth2")
+        send_command(node2, "node2", "add_interface eth2")
 
         send_command(node1, "node1", "add_addr 5000 192.168.2.1")
         send_command(node2, "node2", "add_addr 5000 192.168.2.2")
@@ -150,8 +152,9 @@ pkgs.testers.nixosTest {
     # Phase 3: Remove VLAN 1, verify discovery continues on VLAN 2
     # ============================================================
     with subtest("Interface removal - discovery continues on VLAN 2"):
-        send_command(node1, "node1", "remove_interface 192.168.1.1")
-        send_command(node2, "node2", "remove_interface 192.168.1.2")
+        # remove_interface now takes interface name
+        send_command(node1, "node1", "remove_interface eth1")
+        send_command(node2, "node2", "remove_interface eth1")
 
         send_command(node1, "node1", "remove_addr 192.168.1.1")
         send_command(node2, "node2", "remove_addr 192.168.1.2")

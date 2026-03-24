@@ -16,8 +16,8 @@ pub enum Input {
     AddAddr(u16, Vec<IpAddr>),
     SetTxt(String, Option<String>),
     RemoveTxt(String),
-    AddInterface(IpAddr),
-    RemoveInterface(IpAddr),
+    AddInterface(u32),
+    RemoveInterface(u32),
 }
 
 pub async fn guardian(
@@ -79,23 +79,26 @@ pub async fn guardian(
                 break;
             }
             ActoInput::Message(msg) => match &msg {
-                Input::AddInterface(addr) => {
-                    if let IpAddr::V4(ipv4) = addr {
-                        if let Err(e) = sockets2.add_interface_v4(*ipv4) {
-                            tracing::warn!("Failed to add interface {}: {}", addr, e);
-                        } else {
-                            tracing::info!("Added send-only socket for interface {}", addr);
-                            // Note: We do NOT spawn a receiver for this interface.
-                            // The main v4 receiver already handles receiving from all interfaces.
-                            // This interface is only used for sending multicast.
-                        }
+                Input::AddInterface(ifindex) => {
+                    if let Err(e) = sockets2.add_interface_v4(*ifindex) {
+                        tracing::warn!(
+                            "Failed to add interface index {}: {}",
+                            ifindex,
+                            e
+                        );
+                    } else {
+                        tracing::info!(
+                            "Added send-only socket for interface index {}",
+                            ifindex
+                        );
                     }
                 }
-                Input::RemoveInterface(addr) => {
-                    if let IpAddr::V4(ipv4) = addr {
-                        sockets2.remove_interface_v4(*ipv4);
-                        tracing::info!("Removed send-only socket for interface {}", addr);
-                    }
+                Input::RemoveInterface(ifindex) => {
+                    sockets2.remove_interface_v4(*ifindex);
+                    tracing::info!(
+                        "Removed send-only socket for interface index {}",
+                        ifindex
+                    );
                 }
                 _ => {
                     snd_ref.send(sender::MdnsMsg::Update(msg));

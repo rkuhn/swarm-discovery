@@ -52,6 +52,10 @@
           inherit pkgs;
           inherit testNode;
         };
+        checks.multi-interface = import ./tests/nixos/vlan-subinterface-test.nix {
+          inherit pkgs;
+          inherit testNode;
+        };
       }
     );
 }
