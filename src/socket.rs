@@ -235,14 +235,12 @@ pub fn socket_v4_rx(interfaces: &[u32]) -> Result<UdpSocket, SocketError> {
 
     // Join multicast group on ALL specified interfaces by index
     if interfaces.is_empty() {
-        // No specific interfaces - join on default
-        socket
-            .join_multicast_v4_n(&MDNS_IPV4, &InterfaceIndexOrAddress::Index(0))
-            .map_err(|source| SocketError::JoinMulticast {
-                domain: IP::Ipv4,
-                source,
-            })?;
-        tracing::debug!("Joined multicast on default interface");
+        // No specific interfaces - best effort join on default
+        if let Err(e) = socket.join_multicast_v4_n(&MDNS_IPV4, &InterfaceIndexOrAddress::Index(0)) {
+            tracing::warn!("Failed to join IPv4 multicast on default interface: {}", e);
+        } else {
+            tracing::debug!("Joined IPv4 multicast on default interface");
+        }
     } else {
         // Join on each specified interface by index
         for &ifindex in interfaces {
@@ -300,13 +298,12 @@ pub fn socket_v6() -> Result<UdpSocket, SocketError> {
             source,
         })?;
 
-    // Join multicast on the default interface (interface index 0)
-    socket
-        .join_multicast_v6(&MDNS_IPV6, 0)
-        .map_err(|source| SocketError::JoinMulticast {
-            domain: IP::Ipv6,
-            source,
-        })?;
+    // Join multicast on the default interface (interface index 0, best effort)
+    if let Err(e) = socket.join_multicast_v6(&MDNS_IPV6, 0) {
+        tracing::warn!("Failed to join IPv6 multicast on default interface: {}", e);
+    } else {
+        tracing::debug!("Joined IPv6 multicast on default interface");
+    }
 
     socket
         .set_nonblocking(true)
