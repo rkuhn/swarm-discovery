@@ -5,6 +5,7 @@ mod receiver;
 mod sender;
 mod socket;
 mod updater;
+pub mod utilities;
 
 use acto::{AcTokio, ActoHandle, ActoRef, ActoRuntime, SupervisionRef, TokioJoinHandle};
 use hickory_proto::rr::Name;
@@ -12,7 +13,7 @@ use socket::{SocketError, Sockets};
 use std::{
     collections::BTreeMap,
     fmt::Display,
-    net::{IpAddr, Ipv4Addr},
+    net::IpAddr,
     str::FromStr,
     time::{Duration, Instant},
 };
@@ -101,7 +102,7 @@ pub struct Discoverer {
     tau: Duration,
     phi: f32,
     class: IpClass,
-    multicast_interfaces: Vec<Ipv4Addr>,
+    multicast_interfaces: Vec<u32>,
 }
 
 /// A peer discovered by the swarm discovery service.
@@ -358,16 +359,25 @@ impl Discoverer {
         self
     }
 
-    /// Set which IPv4 addresses to use for sending multicast messages.
+    /// Set which interfaces to use for sending and receiving multicast messages,
+    /// identified by interface index (as returned by `libc::if_nametoindex`).
     ///
-    /// By default (empty vector), multicast messages are sent only on the default interface.
-    /// Provide a list of local IPv4 addresses to send multicast messages on specific interfaces.
+    /// By default (empty), multicast messages are sent only on the default interface.
+    /// Provide a list of interface indices to send and receive multicast messages on
+    /// specific interfaces.
+    ///
+    /// Using interface indices (rather than IP addresses) ensures correct behavior
+    /// with VLAN sub-interfaces and other configurations where multiple interfaces
+    /// share the same parent device.
     ///
     /// This improves discovery in multi-homed environments where peers may be on different
     /// network segments. Note that this only affects IPv4; IPv6 multicast always uses the
     /// default interface.
-    pub fn with_multicast_interfaces_v4(mut self, interfaces: Vec<Ipv4Addr>) -> Self {
-        self.multicast_interfaces = interfaces;
+    pub fn with_multicast_interfaces_v4(
+        mut self,
+        interfaces: impl IntoIterator<Item = u32>,
+    ) -> Self {
+        self.multicast_interfaces = interfaces.into_iter().collect();
         self
     }
 
@@ -468,26 +478,26 @@ impl DropGuard {
         self.aref.send(guardian::Input::RemoveTxt(key));
     }
 
-    /// Add a new IPv4 interface for multicast operations.
+    /// Add a new IPv4 interface for multicast operations, identified by interface index.
     ///
     /// This allows adding network interfaces dynamically after the discovery service
     /// has started. Useful for systems where network interfaces may come up after
     /// the application starts.
     ///
+    /// Use `libc::if_nametoindex` to convert an interface name to an index.
+    ///
     /// Note: This only affects IPv4. IPv6 multicast always uses the default interface.
-    pub fn add_interface_v4(&self, interface: Ipv4Addr) {
-        self.aref
-            .send(guardian::Input::AddInterface(IpAddr::V4(interface)));
+    pub fn add_interface_v4(&self, ifindex: u32) {
+        self.aref.send(guardian::Input::AddInterface(ifindex));
     }
 
-    /// Remove an IPv4 interface from multicast operations.
+    /// Remove an IPv4 interface from multicast operations, identified by interface index.
     ///
     /// This stops sending multicast messages on the specified interface.
     ///
     /// Note: This only affects IPv4. IPv6 multicast always uses the default interface.
-    pub fn remove_interface_v4(&self, interface: Ipv4Addr) {
-        self.aref
-            .send(guardian::Input::RemoveInterface(IpAddr::V4(interface)));
+    pub fn remove_interface_v4(&self, ifindex: u32) {
+        self.aref.send(guardian::Input::RemoveInterface(ifindex));
     }
 }
 
@@ -513,6 +523,14 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
     use tokio::sync::mpsc;
 
+    /// Get the interface index for the loopback interface.
+    fn loopback_ifindex() -> u32 {
+        let name = std::ffi::CString::new("lo").unwrap();
+        let idx = unsafe { libc::if_nametoindex(name.as_ptr()) };
+        assert!(idx != 0, "loopback interface 'lo' not found");
+        idx
+    }
+
     #[tokio::test]
     async fn test_change_addresses() {
         let handle = tokio::runtime::Handle::current();
@@ -522,10 +540,12 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(10);
 
+        let lo_idx = loopback_ifindex();
+
         // First Discoverer (the one we're testing)
         let discoverer1 = Discoverer::new("test_service".to_string(), peer_id1.clone())
             .with_addrs(8000, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))])
-            .with_multicast_interfaces_v4(vec![Ipv4Addr::new(127, 0, 0, 1)])
+            .with_multicast_interfaces_v4(vec![lo_idx])
             .with_cadence(Duration::from_secs(1))
             .with_response_rate(1.0);
 

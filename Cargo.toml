@@ -19,6 +19,7 @@ acto = { version = "0.8.0", features = ["tokio"] }
 hickory-proto = { version = "0.26.0-beta.1", default-features = false }
 rand = "0.10"
 serde = { version = "1.0.228", features = ["derive"], optional = true }
+libc = "0.2"
 socket2 = { version = "0.6", features = ["all"] }
 tokio = { version = "1.49.0", features = ["macros", "net", "rt", "time"] }
 thiserror = "2"

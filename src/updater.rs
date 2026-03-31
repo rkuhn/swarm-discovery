@@ -4,21 +4,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
-use tokio::time::sleep;
 
 pub enum Input {
     Peers(BTreeMap<String, Peer>),
-    GC,
     SizeSubscription(ActoRef<usize>),
-}
-
-fn gc(me: ActoRef<Input>, interval: Duration) {
-    tokio::spawn(async move {
-        sleep(interval).await;
-        if !me.send(Input::GC) {
-            gc(me, Duration::from_millis(10));
-        }
-    });
 }
 
 pub async fn updater(
@@ -28,24 +17,33 @@ pub async fn updater(
     mut callback: Callback,
 ) {
     let gc_interval = tau * 12345 / 9999;
-    gc(ctx.me(), gc_interval);
+    let gc_timer = tokio::time::sleep(gc_interval);
+    tokio::pin!(gc_timer);
 
     let mut peers = BTreeMap::new();
     let mut subscribers = BTreeSet::<ActoRef<usize>>::new();
-    while let ActoInput::Message(msg) = ctx.recv().await {
-        match msg {
-            Input::Peers(msg) => {
-                for (id, peer) in msg {
-                    callback(&id, &peer);
-                    if peers.insert(id, peer).is_none() {
-                        for sub in &subscribers {
-                            sub.send(peers.len());
+    loop {
+        tokio::select! {
+            msg = ctx.recv() => {
+                match msg {
+                    ActoInput::Message(Input::Peers(msg)) => {
+                        for (id, peer) in msg {
+                            callback(&id, &peer);
+                            if peers.insert(id, peer).is_none() {
+                                for sub in &subscribers {
+                                    sub.send(peers.len());
+                                }
+                            }
                         }
                     }
+                    ActoInput::Message(Input::SizeSubscription(sub)) => {
+                        subscribers.insert(sub);
+                    }
+                    _ => break,
                 }
             }
-            Input::GC => {
-                gc(ctx.me(), gc_interval);
+            _ = &mut gc_timer => {
+                gc_timer.as_mut().reset(tokio::time::Instant::now() + gc_interval);
                 if peers.is_empty() {
                     continue;
                 }
@@ -76,9 +74,6 @@ pub async fn updater(
                 for sub in &subscribers {
                     sub.send(peers.len());
                 }
-            }
-            Input::SizeSubscription(sub) => {
-                subscribers.insert(sub);
             }
         }
     }

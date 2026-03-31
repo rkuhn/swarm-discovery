@@ -1,9 +1,11 @@
 use crate::IpClass;
 use hickory_proto::op::Message;
-use socket2::{Domain, Protocol, Socket, Type};
+use socket2::{Domain, InterfaceIndexOrAddress, Protocol, SockRef, Socket, Type};
 use std::{
     collections::HashMap,
+    mem::size_of,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
+    os::fd::AsRawFd,
     sync::{Arc, RwLock},
 };
 use thiserror::Error;
@@ -87,16 +89,105 @@ pub enum SocketError {
         #[source]
         source: std::io::Error,
     },
+    #[error("{domain}: error setting multicast interface")]
+    SetMulticastIf {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("Cannot bind to IPv4 or IPv6")]
     CannotBind,
 }
 
-pub fn socket_v4(interface_addr: Option<Ipv4Addr>) -> Result<UdpSocket, SocketError> {
-    // Make sure we bind to a specific interface if specified
-    let bind_addr = match interface_addr {
-        Some(addr) => SocketAddrV4::new(addr, MDNS_PORT).into(),
-        None => SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT).into(),
+/// Set `IP_MULTICAST_IF` using `ip_mreqn` with an interface index.
+///
+/// `socket2::set_multicast_if_v4` only accepts an IP address, so we call
+/// `libc::setsockopt` directly to use the `imr_ifindex` field.
+fn set_multicast_if_v4_by_index(socket: &Socket, ifindex: u32) -> Result<(), SocketError> {
+    let mreqn = libc::ip_mreqn {
+        imr_multiaddr: libc::in_addr { s_addr: 0 },
+        imr_address: libc::in_addr { s_addr: 0 },
+        imr_ifindex: ifindex as libc::c_int,
     };
+    let ret = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_IP,
+            libc::IP_MULTICAST_IF,
+            &mreqn as *const _ as *const libc::c_void,
+            size_of::<libc::ip_mreqn>() as libc::socklen_t,
+        )
+    };
+    if ret != 0 {
+        return Err(SocketError::SetMulticastIf {
+            domain: IP::Ipv4,
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    Ok(())
+}
+
+/// Create a send-only socket for a specific interface (identified by index).
+///
+/// The socket is bound to 0.0.0.0 with an ephemeral port, then `IP_MULTICAST_IF`
+/// is set via `ip_mreqn` with the interface index to ensure multicast sends go
+/// out on the correct interface.
+pub fn socket_v4_tx(ifindex: u32) -> Result<UdpSocket, SocketError> {
+    let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0).into();
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|source| {
+        SocketError::NewSocket {
+            domain: IP::Ipv4,
+            source,
+        }
+    })?;
+    socket
+        .set_reuse_address(true)
+        .map_err(|source| SocketError::ReuseAddress {
+            domain: IP::Ipv4,
+            source,
+        })?;
+    socket
+        .bind(&bind_addr)
+        .map_err(|source| SocketError::Bind {
+            domain: IP::Ipv4,
+            source,
+        })?;
+    socket
+        .set_multicast_loop_v4(true)
+        .map_err(|source| SocketError::SetMulticastLoop {
+            domain: IP::Ipv4,
+            source,
+        })?;
+    socket
+        .set_multicast_ttl_v4(16)
+        .map_err(|source| SocketError::MulticastTtl {
+            domain: IP::Ipv4,
+            source,
+        })?;
+
+    // Pin multicast sends to the correct interface by index
+    set_multicast_if_v4_by_index(&socket, ifindex)?;
+
+    socket
+        .set_nonblocking(true)
+        .map_err(|source| SocketError::SetNonBlocking {
+            domain: IP::Ipv4,
+            source,
+        })?;
+    UdpSocket::from_std(std::net::UdpSocket::from(socket)).map_err(|source| {
+        SocketError::UdpSocket {
+            domain: IP::Ipv4,
+            source,
+        }
+    })
+}
+
+/// Create a receive socket that joins multicast on all interfaces (by index).
+pub fn socket_v4_rx(interfaces: &[u32]) -> Result<UdpSocket, SocketError> {
+    // CRITICAL: Always bind to 0.0.0.0:5353 for receiving multicast packets.
+    // This allows the socket to receive multicast from ANY interface.
+    let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT).into();
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|source| {
         SocketError::NewSocket {
@@ -129,19 +220,6 @@ pub fn socket_v4(interface_addr: Option<Ipv4Addr>) -> Result<UdpSocket, SocketEr
             domain: IP::Ipv4,
             source,
         })?;
-
-    // Join multicast group once on the default interface.
-    // Due to IP_MULTICAST_ALL (enabled by default on most systems),
-    // this socket will receive multicast packets from ALL interfaces,
-    // not just the default one. This simplifies multi-interface support
-    // for receiving, though sending still requires per-interface sockets.
-    socket
-        .join_multicast_v4(&MDNS_IPV4, &interface_addr.unwrap_or(Ipv4Addr::UNSPECIFIED))
-        .map_err(|source| SocketError::JoinMulticast {
-            domain: IP::Ipv4,
-            source,
-        })?;
-
     socket
         .set_multicast_ttl_v4(16)
         .map_err(|source| SocketError::MulticastTtl {
@@ -154,6 +232,31 @@ pub fn socket_v4(interface_addr: Option<Ipv4Addr>) -> Result<UdpSocket, SocketEr
             domain: IP::Ipv4,
             source,
         })?;
+
+    // Join multicast group on ALL specified interfaces by index
+    if interfaces.is_empty() {
+        // No specific interfaces - best effort join on default
+        if let Err(e) = socket.join_multicast_v4_n(&MDNS_IPV4, &InterfaceIndexOrAddress::Index(0)) {
+            tracing::warn!("Failed to join IPv4 multicast on default interface: {}", e);
+        } else {
+            tracing::debug!("Joined IPv4 multicast on default interface");
+        }
+    } else {
+        // Join on each specified interface by index
+        for &ifindex in interfaces {
+            socket
+                .join_multicast_v4_n(&MDNS_IPV4, &InterfaceIndexOrAddress::Index(ifindex))
+                .map_err(|source| SocketError::JoinMulticast {
+                    domain: IP::Ipv4,
+                    source,
+                })?;
+            tracing::info!(
+                "Joined multicast group 224.0.0.251 on interface index {}",
+                ifindex
+            );
+        }
+    }
+
     UdpSocket::from_std(std::net::UdpSocket::from(socket)).map_err(|source| {
         SocketError::UdpSocket {
             domain: IP::Ipv4,
@@ -195,13 +298,12 @@ pub fn socket_v6() -> Result<UdpSocket, SocketError> {
             source,
         })?;
 
-    // Join multicast on the default interface (interface index 0)
-    socket
-        .join_multicast_v6(&MDNS_IPV6, 0)
-        .map_err(|source| SocketError::JoinMulticast {
-            domain: IP::Ipv6,
-            source,
-        })?;
+    // Join multicast on the default interface (interface index 0, best effort)
+    if let Err(e) = socket.join_multicast_v6(&MDNS_IPV6, 0) {
+        tracing::warn!("Failed to join IPv6 multicast on default interface: {}", e);
+    } else {
+        tracing::debug!("Joined IPv6 multicast on default interface");
+    }
 
     socket
         .set_nonblocking(true)
@@ -221,21 +323,34 @@ pub fn socket_v6() -> Result<UdpSocket, SocketError> {
 pub struct Sockets {
     v4: Option<Arc<UdpSocket>>,
     v6: Option<Arc<UdpSocket>>,
-    interface_sockets_v4: Arc<RwLock<HashMap<Ipv4Addr, Arc<UdpSocket>>>>,
+    interface_sockets_v4: Arc<RwLock<HashMap<u32, Arc<UdpSocket>>>>,
 }
 
 impl Sockets {
-    pub fn new(class: IpClass, multicast_interfaces: Vec<Ipv4Addr>) -> Result<Self, SocketError> {
-        // Create interface-specific sockets for multi-interface mode
+    pub fn new(class: IpClass, multicast_interfaces: Vec<u32>) -> Result<Self, SocketError> {
+        // Create one shared receive socket that joins multicast on all interfaces
+        let v4_socket = if class.has_v4() || matches!(class, IpClass::Auto) {
+            // Create socket that joins multicast on all specified interfaces
+            let socket = socket_v4_rx(&multicast_interfaces)?;
+            Some(Arc::new(socket))
+        } else {
+            None
+        };
+
+        // Create interface specific sockets for sending only
         let mut interface_sockets_v4 = HashMap::new();
-        for addr in &multicast_interfaces {
-            match socket_v4(Some(*addr)) {
+        for &ifindex in &multicast_interfaces {
+            match socket_v4_tx(ifindex) {
                 Ok(socket) => {
-                    tracing::debug!("Created interface-specific socket for {}", addr);
-                    interface_sockets_v4.insert(*addr, Arc::new(socket));
+                    tracing::debug!("Created send-only socket for interface index {}", ifindex);
+                    interface_sockets_v4.insert(ifindex, Arc::new(socket));
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to create interface socket for {}: {}", addr, e);
+                    tracing::warn!(
+                        "Failed to create send socket for interface index {}: {}",
+                        ifindex,
+                        e
+                    );
                 }
             }
         }
@@ -244,7 +359,7 @@ impl Sockets {
         match class {
             IpClass::Auto => {
                 let socket = Self {
-                    v4: socket_v4(None).ok().map(Arc::new),
+                    v4: v4_socket,
                     v6: socket_v6().ok().map(Arc::new),
                     interface_sockets_v4: interface_sockets_v4.clone(),
                 };
@@ -254,10 +369,7 @@ impl Sockets {
                 Ok(socket)
             }
             _ => Ok(Self {
-                v4: class
-                    .has_v4()
-                    .then(|| socket_v4(None).map(Arc::new))
-                    .transpose()?,
+                v4: v4_socket,
                 v6: class
                     .has_v6()
                     .then(|| socket_v6().map(Arc::new))
@@ -275,62 +387,45 @@ impl Sockets {
         self.v6.as_ref().map(Arc::clone)
     }
 
-    /// Add a new IPv4 interface for multicast operations.
+    /// Add a new IPv4 interface for multicast operations (by interface index).
     /// Returns Ok(()) if the socket was successfully created and added.
-    pub fn add_interface_v4(&self, addr: Ipv4Addr) -> Result<(), SocketError> {
-        // Check if interface already exists
-        if self
-            .interface_sockets_v4
-            .read()
-            .unwrap()
-            .contains_key(&addr)
-        {
+    pub fn add_interface_v4(&self, ifindex: u32) -> Result<(), SocketError> {
+        let mut interfaces = self.interface_sockets_v4.write().unwrap();
+        if interfaces.contains_key(&ifindex) {
             return Ok(());
         }
 
         // Create the interface-specific socket for sending
-        let socket = socket_v4(Some(addr))?;
+        let socket = socket_v4_tx(ifindex)?;
 
-        let mut interfaces = self.interface_sockets_v4.write().unwrap();
-        // need to recheck since we dropped the lock in between
-        if !interfaces.contains_key(&addr) {
-            interfaces.insert(addr, Arc::new(socket));
-            tracing::info!("Added interface {} for multicast", addr);
-        }
+        // Join multicast on the shared RX socket so we receive packets on this interface
+        self.join_multicast_v4(ifindex)?;
+
+        interfaces.insert(ifindex, Arc::new(socket));
+        tracing::info!("Added interface index {} for multicast", ifindex);
         Ok(())
     }
 
-    /// Remove an IPv4 interface from multicast operations.
+    /// Remove an IPv4 interface from multicast operations (by interface index).
     /// Returns true if the interface was found and removed.
-    pub fn remove_interface_v4(&self, addr: Ipv4Addr) -> bool {
+    pub fn remove_interface_v4(&self, ifindex: u32) -> bool {
         let mut interfaces = self.interface_sockets_v4.write().unwrap();
 
-        if interfaces.contains_key(&addr) {
-            let socket = interfaces.remove(&addr);
+        if let Some(socket) = interfaces.remove(&ifindex) {
+            // Leave multicast while still holding the lock to prevent a concurrent
+            // add_interface_v4 from re-joining before we finish leaving.
+            self.leave_multicast_v4(ifindex);
+
+            tracing::info!("Removed interface index {} from multicast", ifindex);
+
+            // Drop the lock before dropping the socket to avoid holding it longer than needed.
             drop(interfaces);
-            // drop socket outside the lock
             drop(socket);
-            tracing::info!("Removed interface {} from multicast", addr);
 
             true
         } else {
             false
         }
-    }
-
-    /// Get the socket for a specific IPv4 interface
-    pub fn get_interface_socket_v4(&self, addr: Ipv4Addr) -> Option<Arc<UdpSocket>> {
-        let interfaces = self.interface_sockets_v4.read().unwrap();
-        match interfaces.get(&addr) {
-            Some(sock) => Some(Arc::clone(sock)),
-            None => None,
-        }
-    }
-
-    /// Get all interface addresses that have sockets
-    pub fn get_all_interface_addresses_v4(&self) -> Vec<Ipv4Addr> {
-        let interfaces = self.interface_sockets_v4.read().unwrap();
-        interfaces.keys().copied().collect()
     }
 
     pub async fn send_msg(&self, msg: &Message, mode: Mode) {
@@ -401,12 +496,12 @@ impl Sockets {
 
         // Send on all IPv4 interface-specific sockets
         let interfaces = self.interface_sockets_v4.read().unwrap().clone();
-        for (addr, socket) in interfaces.iter() {
+        for (ifindex, socket) in interfaces.iter() {
             if let Err(e) = socket.send_to(bytes, (MDNS_IPV4, MDNS_PORT)).await {
-                tracing::error!("error sending mDNS on interface {}: {}", addr, e);
+                tracing::error!("error sending mDNS on interface index {}: {}", ifindex, e);
             } else {
                 tracing::debug!(
-                    addr = %addr,
+                    ifindex = ifindex,
                     q = msg.queries().len(),
                     an = msg.answers().len(),
                     ad = msg.additionals().len(),
@@ -419,6 +514,36 @@ impl Sockets {
 
         if sent_count == 0 {
             tracing::error!("failed to send mDNS on any IPv4 interface in multi-interface mode");
+        }
+    }
+
+    fn join_multicast_v4(&self, ifindex: u32) -> Result<(), SocketError> {
+        // Join multicast on the shared RX socket so we receive packets on this interface
+        if let Some(v4) = &self.v4 {
+            let sock_ref = SockRef::from(v4.as_ref());
+            sock_ref
+                .join_multicast_v4_n(&MDNS_IPV4, &InterfaceIndexOrAddress::Index(ifindex))
+                .map_err(|source| SocketError::JoinMulticast {
+                    domain: IP::Ipv4,
+                    source,
+                })?;
+        }
+
+        Ok(())
+    }
+
+    fn leave_multicast_v4(&self, ifindex: u32) {
+        if let Some(v4) = &self.v4 {
+            let sock_ref = SockRef::from(v4.as_ref());
+            if let Err(e) =
+                sock_ref.leave_multicast_v4_n(&MDNS_IPV4, &InterfaceIndexOrAddress::Index(ifindex))
+            {
+                tracing::warn!(
+                    "Failed to leave multicast on interface index {}: {}",
+                    ifindex,
+                    e
+                );
+            }
         }
     }
 }
