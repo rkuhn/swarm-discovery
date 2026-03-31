@@ -56,6 +56,10 @@
           inherit pkgs;
           inherit testNode;
         };
+        checks.drop-cleanup = import ./tests/nixos/drop-cleanup-test.nix {
+          inherit pkgs;
+          inherit testNode;
+        };
       }
     );
 }

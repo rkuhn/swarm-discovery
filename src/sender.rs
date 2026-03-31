@@ -13,8 +13,29 @@ use hickory_proto::{
 };
 use rand::{rng, Rng};
 use std::{collections::BTreeMap, net::IpAddr, str::FromStr, time::Duration};
+use tokio::task::JoinHandle;
 
 const RESPONSE_DELAY: Duration = Duration::from_millis(100);
+
+/// A wrapper around [`JoinHandle`] that aborts the task when dropped.
+///
+/// Bare `tokio::spawn` produces a detached task that outlives the caller if the
+/// [`JoinHandle`] is merely dropped.  Wrapping it in this struct ensures the
+/// spawned task is cancelled as soon as the owning future is cancelled, which
+/// prevents stray sends to closed actor mailboxes during shutdown.
+struct AbortOnDrop(JoinHandle<()>);
+
+impl AbortOnDrop {
+    fn abort(&self) {
+        self.0.abort();
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 pub enum MdnsMsg {
     QueryV4,
@@ -51,7 +72,7 @@ pub async fn sender(
 
     loop {
         let me = ctx.me();
-        let timeout = tokio::spawn(async move {
+        let timeout = AbortOnDrop(tokio::spawn(async move {
             // grow the interval from which the randomized part is draw
             // with the swarm size to keep the number of duplicates low
             let interval = tau * swarm_size as u32 / 10;
@@ -60,7 +81,7 @@ pub async fn sender(
             tracing::debug!(?delay, "waiting for query");
             tokio::time::sleep(delay).await;
             me.send(MdnsMsg::Timeout(timeout_count));
-        });
+        }));
 
         let mode = loop {
             if let ActoInput::Message(msg) = ctx.recv().await {
@@ -102,7 +123,7 @@ pub async fn sender(
         } else {
             extra_delay = extra_delay.checked_sub(RESPONSE_DELAY).unwrap_or_default();
         }
-        let timeout = tokio::spawn(async move {
+        let timeout = AbortOnDrop(tokio::spawn(async move {
             // grow the interval from which the randomized part is draw
             // with the swarm size to keep the number of duplicates low
             // goal is "cutoff within 100ms"
@@ -113,7 +134,7 @@ pub async fn sender(
             tracing::debug!(?delay, "waiting to respond");
             tokio::time::sleep(delay).await;
             me.send(MdnsMsg::Timeout(timeout_count));
-        });
+        }));
 
         let mut response_count = 0;
         has_responded = false;
