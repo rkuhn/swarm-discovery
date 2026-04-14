@@ -107,7 +107,7 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
             }
             RData::TXT(txt) => {
                 for s in txt.txt_data.iter() {
-                    let Ok(s) = std::str::from_utf8(&s) else {
+                    let Ok(s) = std::str::from_utf8(s) else {
                         continue;
                     };
                     if s.is_empty() {
