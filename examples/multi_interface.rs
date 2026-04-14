@@ -1,5 +1,5 @@
 use if_addrs::get_if_addrs;
-use rand::{rng, Rng};
+use rand::{rng, RngExt};
 use std::collections::HashSet;
 use std::{
     io::{stderr, stdin},
