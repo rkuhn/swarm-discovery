@@ -165,7 +165,7 @@ fn make_query(service_name: &Name) -> Message {
 fn make_response(discoverer: &Discoverer, service_name: &Name) -> Option<Message> {
     if let Some(peer) = discoverer.peers.get(&discoverer.peer_id) {
         let mut msg = Message::new(0, MessageType::Response, OpCode::Query);
-        msg.set_authoritative(true);
+        msg.metadata.authoritative = true;
 
         let my_srv_name = Name::from_str(&discoverer.peer_id)
             .expect("PeerId was checked in spawn()")

@@ -360,9 +360,9 @@ impl Sockets {
                         tracing::warn!("error sending mDNS on IPv6: {}", e);
                     } else {
                         tracing::debug!(
-                            q = msg.queries().len(),
-                            an = msg.answers().len(),
-                            ad = msg.additionals().len(),
+                            q = msg.queries.len(),
+                            an = msg.answers.len(),
+                            ad = msg.additionals.len(),
                             "sent {} bytes on IPv6",
                             bytes.len()
                         );
@@ -386,9 +386,9 @@ impl Sockets {
                 tracing::warn!("error sending mDNS: {}", e);
             } else {
                 tracing::debug!(
-                    q = msg.queries().len(),
-                    an = msg.answers().len(),
-                    ad = msg.additionals().len(),
+                    q = msg.queries.len(),
+                    an = msg.answers.len(),
+                    ad = msg.additionals.len(),
                     "sent {} bytes",
                     bytes.len()
                 );
@@ -407,9 +407,9 @@ impl Sockets {
             } else {
                 tracing::debug!(
                     addr = %addr,
-                    q = msg.queries().len(),
-                    an = msg.answers().len(),
-                    ad = msg.additionals().len(),
+                    q = msg.queries.len(),
+                    an = msg.answers.len(),
+                    ad = msg.additionals.len(),
                     "sent {} bytes on interface",
                     bytes.len()
                 );
