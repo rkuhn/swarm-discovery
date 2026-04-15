@@ -44,7 +44,7 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
             return None;
         }
     };
-    for question in packet.queries() {
+    for question in &packet.queries {
         if question.query_class() != DNSClass::IN {
             tracing::trace!(
                 "received mDNS query with wrong class {}",
@@ -74,15 +74,15 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
 
     let mut peer_ports: BTreeMap<Name, Vec<(u16, String)>> = BTreeMap::new();
     let mut peer_txt: BTreeMap<String, TxtData> = BTreeMap::new();
-    for response in packet.answers() {
-        if response.dns_class() != DNSClass::IN {
+    for response in &packet.answers {
+        if response.dns_class != DNSClass::IN {
             tracing::trace!(
                 "received mDNS response with wrong class {:?}",
-                response.dns_class()
+                response.dns_class
             );
             continue;
         }
-        let name = response.name();
+        let name = &response.name;
         if name.base_name() != *service_name {
             tracing::trace!("received mDNS response with wrong service {}", name);
             continue;
@@ -98,16 +98,16 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
             );
             continue;
         };
-        match response.data() {
+        match &response.data {
             RData::SRV(srv) => {
                 peer_ports
-                    .entry(srv.target().clone())
+                    .entry(srv.target.clone())
                     .or_default()
-                    .push((srv.port(), peer_id.to_string()));
+                    .push((srv.port, peer_id.to_string()));
             }
             RData::TXT(txt) => {
-                for s in txt.iter() {
-                    let Ok(s) = std::str::from_utf8(&s) else {
+                for s in txt.txt_data.iter() {
+                    let Ok(s) = std::str::from_utf8(s) else {
                         continue;
                     };
                     if s.is_empty() {
@@ -124,36 +124,33 @@ fn handle_msg(buf: &[u8], service_name: &Name, addr: IpAddr) -> Option<MdnsMsg> 
                 }
             }
             _ => {
-                tracing::trace!(
-                    "received mDNS response with wrong data {:?}",
-                    response.data()
-                );
+                tracing::trace!("received mDNS response with wrong data {:?}", response.data);
             }
         }
     }
 
     let mut peer_addrs: BTreeMap<String, Vec<(IpAddr, u16)>> = BTreeMap::new();
-    for additional in packet.additionals() {
-        if additional.dns_class() != DNSClass::IN {
+    for additional in &packet.additionals {
+        if additional.dns_class != DNSClass::IN {
             tracing::trace!(
                 "received mDNS additional with wrong class {:?}",
-                additional.dns_class()
+                additional.dns_class
             );
             continue;
         }
-        let name = additional.name();
+        let name = &additional.name;
         if name.base_name() != local {
             tracing::trace!("received mDNS additional for wrong service {}", name);
             continue;
         }
         tracing::trace!("received mDNS additional for {}", name);
-        let ip: IpAddr = match additional.data() {
+        let ip: IpAddr = match &additional.data {
             RData::A(a) => a.0.into(),
             RData::AAAA(a) => a.0.into(),
             _ => {
                 tracing::debug!(
                     "received mDNS additional with wrong data {:?}",
-                    additional.data()
+                    additional.data
                 );
                 continue;
             }
