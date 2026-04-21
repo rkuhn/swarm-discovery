@@ -1,6 +1,6 @@
 [package]
 name = "swarm-discovery"
-version = "0.6.0-alpha.2"
+version = "0.6.0"
 edition = "2021"
 authors = ["Roland Kuhn"]
 description = "Discovery service for IP-based swarms"
@@ -16,7 +16,7 @@ serde = ["dep:serde"]
 
 [dependencies]
 acto = { version = "0.8.0", features = ["tokio"] }
-hickory-proto = { version = "=0.26.0-beta.4", default-features = false }
+hickory-proto = { version = "0.26", default-features = false }
 rand = "0.10"
 serde = { version = "1.0.228", features = ["derive"], optional = true }
 socket2 = { version = "0.6", features = ["all"] }
