@@ -134,7 +134,7 @@ impl Peer {
 
     /// Returns true if this peer has expired.
     pub fn is_expiry(&self) -> bool {
-        self.addrs.len() == 0
+        self.addrs.is_empty()
     }
 
     /// Return the age of this peer snapshot.

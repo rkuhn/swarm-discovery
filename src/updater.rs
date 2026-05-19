@@ -31,6 +31,7 @@ pub async fn updater(
     gc(ctx.me(), gc_interval);
 
     let mut peers = BTreeMap::new();
+    #[allow(clippy::mutable_key_type)]
     let mut subscribers = BTreeSet::<ActoRef<usize>>::new();
     while let ActoInput::Message(msg) = ctx.recv().await {
         match msg {

@@ -293,10 +293,10 @@ impl Sockets {
 
         let mut interfaces = self.interface_sockets_v4.write().unwrap();
         // need to recheck since we dropped the lock in between
-        if !interfaces.contains_key(&addr) {
-            interfaces.insert(addr, Arc::new(socket));
+        interfaces.entry(addr).or_insert_with(|| {
             tracing::info!("Added interface {} for multicast", addr);
-        }
+            Arc::new(socket)
+        });
         Ok(())
     }
 
