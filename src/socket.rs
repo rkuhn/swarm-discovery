@@ -136,11 +136,18 @@ pub fn socket_v4(interface_addr: Option<Ipv4Addr>) -> Result<UdpSocket, SocketEr
             source,
         })?;
 
-    // Join multicast group once on the default interface.
-    // Due to IP_MULTICAST_ALL (enabled by default on most systems),
-    // this socket will receive multicast packets from ALL interfaces,
-    // not just the default one. This simplifies multi-interface support
-    // for receiving, though sending still requires per-interface sockets.
+    // Join the multicast group once, on the interface of the default route.
+    //
+    // Group membership is per interface, so packets arriving on any other
+    // interface are not delivered to this socket. IP_MULTICAST_ALL would
+    // paper over this on Linux when another membership exists, but that
+    // socket option is Linux-only; on macOS and other BSD-derived systems
+    // reception from non-default interfaces does not work. The per-interface
+    // sockets cannot take over reception either: they are bound to a unicast
+    // address and therefore never match multicast-destined packets. Reception
+    // on further interfaces is instead set up by
+    // `Sockets::join_group_on_main_v4`, which joins the group per interface on
+    // this main wildcard socket.
     socket
         .join_multicast_v4(&MDNS_IPV4, &interface_addr.unwrap_or(Ipv4Addr::UNSPECIFIED))
         .map_err(|source| SocketError::JoinMulticast {
