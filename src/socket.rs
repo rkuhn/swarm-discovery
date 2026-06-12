@@ -75,6 +75,12 @@ pub enum SocketError {
         #[source]
         source: std::io::Error,
     },
+    #[error("{domain}: error setting the multicast interface")]
+    SetMulticastIf {
+        domain: IP,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("{domain}: error setting the socket to non-blocking mode")]
     SetNonBlocking {
         domain: IP,
@@ -130,17 +136,38 @@ pub fn socket_v4(interface_addr: Option<Ipv4Addr>) -> Result<UdpSocket, SocketEr
             source,
         })?;
 
-    // Join multicast group once on the default interface.
-    // Due to IP_MULTICAST_ALL (enabled by default on most systems),
-    // this socket will receive multicast packets from ALL interfaces,
-    // not just the default one. This simplifies multi-interface support
-    // for receiving, though sending still requires per-interface sockets.
+    // Join the multicast group once, on the interface of the default route.
+    //
+    // Group membership is per interface, so packets arriving on any other
+    // interface are not delivered to this socket. IP_MULTICAST_ALL would
+    // paper over this on Linux when another membership exists, but that
+    // socket option is Linux-only; on macOS and other BSD-derived systems
+    // reception from non-default interfaces does not work. The per-interface
+    // sockets cannot take over reception either: they are bound to a unicast
+    // address and therefore never match multicast-destined packets. Reception
+    // on further interfaces is instead set up by
+    // `Sockets::join_group_on_main_v4`, which joins the group per interface on
+    // this main wildcard socket.
     socket
         .join_multicast_v4(&MDNS_IPV4, &interface_addr.unwrap_or(Ipv4Addr::UNSPECIFIED))
         .map_err(|source| SocketError::JoinMulticast {
             domain: IP::Ipv4,
             source,
         })?;
+
+    // Pin multicast egress to the requested interface. Binding to the
+    // interface address alone does not reliably select the outgoing
+    // interface for multicast: the kernel falls back to the routing table,
+    // which can pick a different interface or fail with "no route to host"
+    // (for example for interfaces without a multicast route entry).
+    if let Some(addr) = interface_addr {
+        socket
+            .set_multicast_if_v4(&addr)
+            .map_err(|source| SocketError::SetMulticastIf {
+                domain: IP::Ipv4,
+                source,
+            })?;
+    }
 
     socket
         .set_multicast_ttl_v4(16)
@@ -241,7 +268,7 @@ impl Sockets {
         }
         let interface_sockets_v4 = Arc::new(RwLock::new(interface_sockets_v4));
 
-        match class {
+        let sockets = match class {
             IpClass::Auto => {
                 let socket = Self {
                     v4: socket_v4(None).ok().map(Arc::new),
@@ -251,9 +278,9 @@ impl Sockets {
                 if socket.v4.is_none() && socket.v6.is_none() {
                     return Err(SocketError::CannotBind);
                 }
-                Ok(socket)
+                socket
             }
-            _ => Ok(Self {
+            _ => Self {
                 v4: class
                     .has_v4()
                     .then(|| socket_v4(None).map(Arc::new))
@@ -263,8 +290,12 @@ impl Sockets {
                     .then(|| socket_v6().map(Arc::new))
                     .transpose()?,
                 interface_sockets_v4: interface_sockets_v4.clone(),
-            }),
+            },
+        };
+        for addr in sockets.get_all_interface_addresses_v4() {
+            sockets.join_group_on_main_v4(addr);
         }
+        Ok(sockets)
     }
 
     pub fn v4(&self) -> Option<Arc<UdpSocket>> {
@@ -273,6 +304,39 @@ impl Sockets {
 
     pub fn v6(&self) -> Option<Arc<UdpSocket>> {
         self.v6.as_ref().map(Arc::clone)
+    }
+
+    /// Joins the multicast group on the given interface on the main wildcard
+    /// IPv4 socket.
+    ///
+    /// Group membership is per interface: the wildcard socket initially only
+    /// joins the group on the interface of the default route, so multicast
+    /// arriving on other interfaces is not delivered to it (except on
+    /// platforms with `IP_MULTICAST_ALL` semantics and an existing
+    /// system-wide membership). The per-interface sockets cannot take over
+    /// reception either, because they are bound to a unicast address and
+    /// therefore never match multicast-destined packets. Joining the group
+    /// per interface on the wildcard socket makes reception work on all
+    /// interfaces.
+    fn join_group_on_main_v4(&self, addr: Ipv4Addr) {
+        if let Some(v4) = &self.v4 {
+            match v4.join_multicast_v4(MDNS_IPV4, addr) {
+                Ok(()) => tracing::debug!("joined multicast group on interface {}", addr),
+                // Already being a member on this interface (e.g. the default
+                // interface joined at socket creation) is not a problem.
+                Err(e) => tracing::debug!("could not join multicast group on {}: {}", addr, e),
+            }
+        }
+    }
+
+    /// Leaves the multicast group on the given interface on the main wildcard
+    /// IPv4 socket. See [`Self::join_group_on_main_v4`].
+    fn leave_group_on_main_v4(&self, addr: Ipv4Addr) {
+        if let Some(v4) = &self.v4 {
+            if let Err(e) = v4.leave_multicast_v4(MDNS_IPV4, addr) {
+                tracing::debug!("could not leave multicast group on {}: {}", addr, e);
+            }
+        }
     }
 
     /// Add a new IPv4 interface for multicast operations.
@@ -291,12 +355,15 @@ impl Sockets {
         // Create the interface-specific socket for sending
         let socket = socket_v4(Some(addr))?;
 
-        let mut interfaces = self.interface_sockets_v4.write().unwrap();
-        // need to recheck since we dropped the lock in between
-        interfaces.entry(addr).or_insert_with(|| {
-            tracing::info!("Added interface {} for multicast", addr);
-            Arc::new(socket)
-        });
+        {
+            let mut interfaces = self.interface_sockets_v4.write().unwrap();
+            // need to recheck since we dropped the lock in between
+            interfaces.entry(addr).or_insert_with(|| {
+                tracing::info!("Added interface {} for multicast", addr);
+                Arc::new(socket)
+            });
+        }
+        self.join_group_on_main_v4(addr);
         Ok(())
     }
 
@@ -310,6 +377,7 @@ impl Sockets {
             drop(interfaces);
             // drop socket outside the lock
             drop(socket);
+            self.leave_group_on_main_v4(addr);
             tracing::info!("Removed interface {} from multicast", addr);
 
             true

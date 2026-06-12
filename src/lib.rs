@@ -533,9 +533,14 @@ mod tests {
             .spawn(&handle)
             .expect("Failed to spawn discoverer1");
 
-        // Second Discoverer (to verify the changes)
-        let discoverer2 =
-            Discoverer::new("test_service".to_string(), peer_id2).with_callback(move |id, peer| {
+        // Second Discoverer (to verify the changes). It uses the same
+        // multicast interface as the first one: multicast sent on the
+        // loopback interface is only delivered to members on the loopback
+        // interface, which also keeps this test independent of the host's
+        // default route.
+        let discoverer2 = Discoverer::new("test_service".to_string(), peer_id2)
+            .with_multicast_interfaces_v4(vec![Ipv4Addr::new(127, 0, 0, 1)])
+            .with_callback(move |id, peer| {
                 if id == peer_id1 {
                     tx.try_send(peer.clone()).ok();
                 }
