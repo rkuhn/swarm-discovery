@@ -116,13 +116,14 @@ pub fn socket_v4(interface_addr: Option<Ipv4Addr>) -> Result<UdpSocket, SocketEr
             domain: IP::Ipv4,
             source,
         })?;
+    // Best-effort: some platforms (e.g. esp-idf/lwIP) declare SO_REUSEPORT but
+    // leave it unimplemented (setsockopt returns ENOPROTOOPT). It is not needed
+    // for a single process binding the mDNS port, and a genuine "port in use"
+    // still surfaces at bind(), so tolerate a failure here instead of aborting.
     #[cfg(unix)]
-    socket
-        .set_reuse_port(true)
-        .map_err(|source| SocketError::ReusePort {
-            domain: IP::Ipv4,
-            source,
-        })?;
+    if let Err(e) = socket.set_reuse_port(true) {
+        tracing::debug!("set_reuse_port (IPv4) failed, continuing: {e}");
+    }
     socket
         .bind(&bind_addr)
         .map_err(|source| SocketError::Bind {
@@ -202,13 +203,12 @@ pub fn socket_v6() -> Result<UdpSocket, SocketError> {
             domain: IP::Ipv6,
             source,
         })?;
+    // See the IPv4 path: set_reuse_port is best-effort (unimplemented on some
+    // platforms, e.g. esp-idf/lwIP), so tolerate a failure here.
     #[cfg(unix)]
-    socket
-        .set_reuse_port(true)
-        .map_err(|source| SocketError::ReusePort {
-            domain: IP::Ipv6,
-            source,
-        })?;
+    if let Err(e) = socket.set_reuse_port(true) {
+        tracing::debug!("set_reuse_port (IPv6) failed, continuing: {e}");
+    }
     socket
         .bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, MDNS_PORT)).into())
         .map_err(|source| SocketError::Bind {
