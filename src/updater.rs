@@ -13,11 +13,13 @@ pub enum Input {
 }
 
 fn gc(me: ActoRef<Input>, interval: Duration) {
+    schedule_gc(move || me.send(Input::GC), interval);
+}
+
+fn schedule_gc(send: impl FnOnce() -> bool + Send + 'static, interval: Duration) {
     tokio::spawn(async move {
         sleep(interval).await;
-        if !me.send(Input::GC) {
-            gc(me, Duration::from_millis(10));
-        }
+        send();
     });
 }
 
@@ -82,5 +84,32 @@ pub async fn updater(
                 subscribers.insert(sub);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::schedule_gc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn gc_stops_after_the_receiver_is_gone() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed_attempts = attempts.clone();
+        schedule_gc(
+            move || {
+                observed_attempts.fetch_add(1, Ordering::Relaxed);
+                false
+            },
+            Duration::from_millis(1),
+        );
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
     }
 }
