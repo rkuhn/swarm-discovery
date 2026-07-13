@@ -13,14 +13,14 @@ pub enum Input {
 }
 
 fn gc(me: ActoRef<Input>, interval: Duration) {
-    schedule_gc(move || me.send(Input::GC), interval);
+    tokio::spawn(schedule_gc(me, interval));
 }
 
-fn schedule_gc(send: impl FnOnce() -> bool + Send + 'static, interval: Duration) {
-    tokio::spawn(async move {
-        sleep(interval).await;
-        send();
-    });
+async fn schedule_gc(me: ActoRef<Input>, interval: Duration) {
+    sleep(interval).await;
+    while !me.send(Input::GC) && !me.is_gone() {
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 pub async fn updater(
@@ -89,27 +89,39 @@ pub async fn updater(
 
 #[cfg(test)]
 mod tests {
-    use super::schedule_gc;
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
+    use super::{schedule_gc, Input};
+    use acto::{AcTokio, AcTokioRuntime, ActoCell, ActoHandle, ActoInput, ActoRuntime};
     use std::time::Duration;
+    use tokio::{sync::mpsc, time::timeout};
 
     #[tokio::test]
     async fn gc_stops_after_the_receiver_is_gone() {
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let observed_attempts = attempts.clone();
-        schedule_gc(
-            move || {
-                observed_attempts.fetch_add(1, Ordering::Relaxed);
-                false
+        let runtime = AcTokio::from_handle("gc-test", tokio::runtime::Handle::current());
+        let (gc_tx, mut gc_rx) = mpsc::unbounded_channel();
+        let actor = runtime.spawn_actor(
+            "updater",
+            move |mut ctx: ActoCell<Input, AcTokioRuntime>| async move {
+                if let ActoInput::Message(Input::GC) = ctx.recv().await {
+                    gc_tx.send(()).unwrap();
+                }
             },
-            Duration::from_millis(1),
         );
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        schedule_gc(actor.me.clone(), Duration::from_millis(1)).await;
+        timeout(Duration::from_secs(1), gc_rx.recv())
+            .await
+            .expect("GC was not received")
+            .expect("GC observer was dropped");
+        timeout(Duration::from_secs(1), actor.handle.join())
+            .await
+            .expect("actor did not terminate")
+            .expect("actor panicked");
 
-        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        timeout(
+            Duration::from_millis(100),
+            schedule_gc(actor.me, Duration::from_millis(1)),
+        )
+        .await
+        .expect("GC kept retrying after actor termination");
     }
 }
