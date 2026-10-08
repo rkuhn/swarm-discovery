@@ -149,12 +149,24 @@ pub fn socket_v4(interface_addr: Option<Ipv4Addr>) -> Result<UdpSocket, SocketEr
     // on further interfaces is instead set up by
     // `Sockets::join_group_on_main_v4`, which joins the group per interface on
     // this main wildcard socket.
-    socket
-        .join_multicast_v4(&MDNS_IPV4, &interface_addr.unwrap_or(Ipv4Addr::UNSPECIFIED))
-        .map_err(|source| SocketError::JoinMulticast {
-            domain: IP::Ipv4,
-            source,
-        })?;
+    //
+    // A host without a default or multicast route (e.g. an offline access
+    // point) has no interface to resolve INADDR_ANY to, and the kernel fails
+    // this join with ENODEV. The per-interface joins still cover reception
+    // there, so only an interface-specific join is fatal.
+    if let Err(source) =
+        socket.join_multicast_v4(&MDNS_IPV4, &interface_addr.unwrap_or(Ipv4Addr::UNSPECIFIED))
+    {
+        if interface_addr.is_some() {
+            return Err(SocketError::JoinMulticast {
+                domain: IP::Ipv4,
+                source,
+            });
+        }
+        tracing::warn!(
+            "could not join multicast group on the default interface, continuing: {source}"
+        );
+    }
 
     // Pin multicast egress to the requested interface. Binding to the
     // interface address alone does not reliably select the outgoing
