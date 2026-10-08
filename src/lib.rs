@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![allow(clippy::result_large_err)]
 
 mod guardian;
 mod receiver;
