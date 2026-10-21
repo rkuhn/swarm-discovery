@@ -120,7 +120,22 @@ pub fn socket_v4(interface_addr: Option<Ipv4Addr>) -> Result<UdpSocket, SocketEr
     // leave it unimplemented (setsockopt returns ENOPROTOOPT). It is not needed
     // for a single process binding the mDNS port, and a genuine "port in use"
     // still surfaces at bind(), so tolerate a failure here instead of aborting.
-    #[cfg(unix)]
+    //
+    // illumos/Solaris/Cygwin are excluded entirely (not just handled via the
+    // fallback above) because `socket2` does not compile `set_reuse_port` for
+    // them at all -- there's no `SO_REUSEPORT` in `libc` for those targets,
+    // because the OS itself has no such socket option (confirmed: illumos has
+    // never integrated SO_REUSEPORT support, see e.g. the OmniOS/SmartOS
+    // bug trackers). Same reasoning `socket2`'s own `set_reuse_port` cfg gate
+    // uses.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "illumos",
+            target_os = "solaris",
+            target_os = "cygwin"
+        ))
+    ))]
     if let Err(e) = socket.set_reuse_port(true) {
         tracing::debug!("set_reuse_port (IPv4) failed, continuing: {e}");
     }
@@ -216,8 +231,17 @@ pub fn socket_v6() -> Result<UdpSocket, SocketError> {
             source,
         })?;
     // See the IPv4 path: set_reuse_port is best-effort (unimplemented on some
-    // platforms, e.g. esp-idf/lwIP), so tolerate a failure here.
-    #[cfg(unix)]
+    // platforms, e.g. esp-idf/lwIP), so tolerate a failure here. illumos/
+    // Solaris/Cygwin are excluded entirely rather than handled via that
+    // fallback -- see the IPv4 path's comment for why.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "illumos",
+            target_os = "solaris",
+            target_os = "cygwin"
+        ))
+    ))]
     if let Err(e) = socket.set_reuse_port(true) {
         tracing::debug!("set_reuse_port (IPv6) failed, continuing: {e}");
     }
