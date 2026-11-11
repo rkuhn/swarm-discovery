@@ -3,8 +3,9 @@ use hickory_proto::op::Message;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     collections::HashMap,
+    io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
 };
 use thiserror::Error;
 use tokio::net::UdpSocket;
@@ -280,11 +281,35 @@ pub fn socket_v6() -> Result<UdpSocket, SocketError> {
     })
 }
 
+/// Which interface-specific sends are currently failing, and with what.
+///
+/// An interface that can never send multicast (e.g. a WireGuard tunnel, which
+/// has no MULTICAST flag and answers with ENOKEY) would otherwise log the same
+/// error on every round. A failure is reported once, and again only when the
+/// error changes.
+#[derive(Debug, Default)]
+struct SendFailures(Mutex<HashMap<Ipv4Addr, (io::ErrorKind, Option<i32>)>>);
+
+impl SendFailures {
+    /// Records a failed send; returns true if it differs from the last one
+    /// recorded for this interface and should be logged.
+    fn failed(&self, addr: Ipv4Addr, error: &io::Error) -> bool {
+        let key = (error.kind(), error.raw_os_error());
+        self.0.lock().unwrap().insert(addr, key) != Some(key)
+    }
+
+    /// Records a successful send; returns true if the interface was failing.
+    fn succeeded(&self, addr: Ipv4Addr) -> bool {
+        self.0.lock().unwrap().remove(&addr).is_some()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Sockets {
     v4: Option<Arc<UdpSocket>>,
     v6: Option<Arc<UdpSocket>>,
     interface_sockets_v4: Arc<RwLock<HashMap<Ipv4Addr, Arc<UdpSocket>>>>,
+    send_failures_v4: Arc<SendFailures>,
 }
 
 impl Sockets {
@@ -303,6 +328,7 @@ impl Sockets {
             }
         }
         let interface_sockets_v4 = Arc::new(RwLock::new(interface_sockets_v4));
+        let send_failures_v4 = Arc::new(SendFailures::default());
 
         let sockets = match class {
             IpClass::Auto => {
@@ -310,6 +336,7 @@ impl Sockets {
                     v4: socket_v4(None).ok().map(Arc::new),
                     v6: socket_v6().ok().map(Arc::new),
                     interface_sockets_v4: interface_sockets_v4.clone(),
+                    send_failures_v4: send_failures_v4.clone(),
                 };
                 if socket.v4.is_none() && socket.v6.is_none() {
                     return Err(SocketError::CannotBind);
@@ -326,6 +353,7 @@ impl Sockets {
                     .then(|| socket_v6().map(Arc::new))
                     .transpose()?,
                 interface_sockets_v4: interface_sockets_v4.clone(),
+                send_failures_v4: send_failures_v4.clone(),
             },
         };
         for addr in sockets.get_all_interface_addresses_v4() {
@@ -413,6 +441,7 @@ impl Sockets {
             drop(interfaces);
             // drop socket outside the lock
             drop(socket);
+            self.send_failures_v4.succeeded(addr);
             self.leave_group_on_main_v4(addr);
             tracing::info!("Removed interface {} from multicast", addr);
 
@@ -507,8 +536,19 @@ impl Sockets {
         let interfaces = self.interface_sockets_v4.read().unwrap().clone();
         for (addr, socket) in interfaces.iter() {
             if let Err(e) = socket.send_to(bytes, (MDNS_IPV4, MDNS_PORT)).await {
-                tracing::error!("error sending mDNS on interface {}: {}", addr, e);
+                if self.send_failures_v4.failed(*addr, &e) {
+                    tracing::error!(
+                        "error sending mDNS on interface {}: {} (not repeated while it persists)",
+                        addr,
+                        e
+                    );
+                } else {
+                    tracing::debug!("error sending mDNS on interface {}: {}", addr, e);
+                }
             } else {
+                if self.send_failures_v4.succeeded(*addr) {
+                    tracing::info!("sending mDNS on interface {} works again", addr);
+                }
                 tracing::debug!(
                     addr = %addr,
                     q = msg.queries.len(),
@@ -532,4 +572,35 @@ pub enum Mode {
     V4,
     V6,
     Any,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SendFailures;
+    use std::{io, net::Ipv4Addr};
+
+    #[test]
+    fn repeated_send_failures_are_reported_once() {
+        let failures = SendFailures::default();
+        let tunnel = Ipv4Addr::new(10, 99, 99, 132);
+        let enokey = || io::Error::from_raw_os_error(126);
+
+        assert!(failures.failed(tunnel, &enokey()));
+        assert!(!failures.failed(tunnel, &enokey()));
+        // a different error on the same interface is reported again
+        assert!(failures.failed(tunnel, &io::Error::from_raw_os_error(101)));
+
+        assert!(failures.succeeded(tunnel));
+        assert!(!failures.succeeded(tunnel));
+        // and a failure after recovering counts as new
+        assert!(failures.failed(tunnel, &enokey()));
+    }
+
+    #[test]
+    fn interfaces_are_tracked_separately() {
+        let failures = SendFailures::default();
+        let error = io::Error::from_raw_os_error(126);
+        assert!(failures.failed(Ipv4Addr::new(10, 0, 0, 1), &error));
+        assert!(failures.failed(Ipv4Addr::new(10, 0, 0, 2), &error));
+    }
 }
